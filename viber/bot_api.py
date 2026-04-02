@@ -28,7 +28,7 @@ class ViberBotAPI:
         except requests.RequestException as e:
             return {"status": -1, "status_message": str(e)}
 
-    def set_webhook(self, url: str = "https://proton.me/", event_types: list = None) -> dict:
+    def set_webhook(self, url: str = "https://httpbin.org/post", event_types: list = None) -> dict:
         """POST /set_webhook — Required on first use to activate the bot."""
         return self._post("set_webhook", {
             "url": url,
