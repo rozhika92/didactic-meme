@@ -9,8 +9,7 @@ How to run manually
 5. Stop it with `Ctrl+C`.
 
 What it does
-- Checks whether `PdaNetPC.exe` is already running.
-- Starts it if it is not already running.
+- Starts `PdaNetPC.exe` every 2 minutes.
 - Waits 2 minutes between checks/execution attempts.
 - Prints a timestamped log line for each attempt.
 
@@ -39,12 +38,11 @@ from __future__ import annotations
 
 import datetime as dt
 import os
-import subprocess
 import time
+import subprocess
 
 
 EXE_PATH = r"C:\Program Files (x86)\PdaNet for Android\PdaNetPC.exe"
-PROCESS_NAME = "PdaNetPC.exe"
 INTERVAL_SECONDS = 120
 
 
@@ -53,36 +51,14 @@ def log(message: str) -> None:
     print(f"[{timestamp}] {message}", flush=True)
 
 
-def is_process_running(process_name: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["tasklist", "/FI", f"IMAGENAME eq {process_name}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        log("`tasklist` was not found; skipping running-process check.")
-        return False
-    except Exception as exc:
-        log(f"Failed to query running processes: {exc}")
-        return False
-
-    return process_name.lower() in result.stdout.lower()
-
-
 def launch_pdanet() -> None:
     if not os.path.exists(EXE_PATH):
         log(f"Executable not found: {EXE_PATH}")
         return
 
-    if is_process_running(PROCESS_NAME):
-        log(f"{PROCESS_NAME} is already running; skipping launch.")
-        return
-
     try:
         subprocess.Popen([EXE_PATH])
-        log(f"Started {PROCESS_NAME}")
+        log("Started PdaNetPC.exe")
     except OSError as exc:
         log(f"Failed to launch {EXE_PATH}: {exc}")
     except Exception as exc:
