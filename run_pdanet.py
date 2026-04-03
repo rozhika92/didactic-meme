@@ -1,4 +1,4 @@
-r"""
+"""
 Run PdaNetPC.exe every 2 minutes on Windows.
 
 How to run manually
@@ -25,12 +25,12 @@ Task Scheduler alternative
 5. On the Actions tab:
    - Program/script: path to `python.exe`
    - Add arguments: full path to this script, for example:
-     `"C:\path\to\run_pdanet.py"`
+     `"C:\\path\\to\\run_pdanet.py"`
 6. Save the task.
 
 If you prefer Task Scheduler to launch PdaNet directly every 2 minutes instead of
 running this script continuously:
-1. Create a task for `C:\Program Files (x86)\PdaNet for Android\PdaNetPC.exe`
+1. Create a task for `C:\\Program Files (x86)\\PdaNet for Android\\PdaNetPC.exe`
 2. In Triggers, create a trigger and enable "Repeat task every: 2 minutes"
 3. Set the duration to "Indefinitely"
 """
