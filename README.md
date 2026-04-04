@@ -96,7 +96,7 @@ The client reproduces the mobile authentication flow used by the Android app, in
 
 ### Graph API page operations
 
-- Base Graph URL: `https://graph.facebook.com/v19.0`
+- Base Graph URL: `https://b-graph.facebook.com`
 - Supported operations:
   - `GET /me` for basic user verification
   - `GET /me/accounts` to list managed pages and page access tokens
@@ -110,12 +110,24 @@ The client uses the reverse-engineered Android app identity:
 - App ID: `121876164619130`
 - App Version: `546.0.0.56.106`
 - Build Number: `917854681`
-- API Key: `882a8490361da98702bf97a021ddc14d`
+- API Key: `121876164619130` (the app uses the App ID as `api_key`)
+- API Secret: `1ab2c5c902faedd339c14b2d58e929dc`
 - Mobile authentication headers include:
   - `User-Agent: [FBAN/PagesManager;FBAV/546.0.0.56.106;FBBV/917854681;FBPN/com.facebook.pages.app;FBLC/en_US;FBCR/;FBMF/Google;FBBD/google;FBDV/Pixel 6;FBSV/13.0;FBCA/arm64-v8a:;FB_FW/1;]`
   - `X-FB-HTTP-Engine: Liger`
-  - `X-FB-Connection-Type: WIFI`
+  - `X-FB-Connection-Quality: EXCELLENT`
+  - `X-FB-Friendly-Name: authenticate`
   - `Accept-Language: en_US`
+
+Only the headers confirmed in the APK decompilation are sent from Java:
+
+- `User-Agent`
+- `Content-Type: application/x-www-form-urlencoded`
+- `X-FB-HTTP-Engine: Liger`
+- `X-FB-Connection-Quality: EXCELLENT`
+- `X-FB-Friendly-Name: authenticate`
+- `Accept-Encoding: gzip, deflate`
+- `Accept-Language: en_US`
 
 ## Error codes
 

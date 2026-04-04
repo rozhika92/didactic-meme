@@ -17,8 +17,8 @@ from urllib3.util.retry import Retry
 
 
 # App identity extracted from APK decompilation
-API_KEY = "882a8490361da98702bf97a021ddc14d"
-API_SECRET = "62f8ce9f74b12f84c123cc23437a4a32"
+API_KEY = "121876164619130"
+API_SECRET = "1ab2c5c902faedd339c14b2d58e929dc"
 APP_ID = "121876164619130"
 APP_VERSION = "546.0.0.56.106"
 BUILD_NUM = "917854681"
@@ -46,21 +46,14 @@ HEADERS = {
     "User-Agent": USER_AGENT,
     "Content-Type": "application/x-www-form-urlencoded",
     "X-FB-HTTP-Engine": "Liger",
-    "X-FB-Connection-Type": "WIFI",
-    "X-FB-Net-HNI": "310260",
-    "X-FB-SIM-HNI": "310260",
     "X-FB-Connection-Quality": "EXCELLENT",
-    "X-FB-Connection-Bandwidth": "30000000",
-    "X-FB-Device-Group": "7000",
     "X-FB-Friendly-Name": "authenticate",
-    "X-FB-Request-Analytics-Tags": "unknown",
-    "X-FB-Background-State": "1",
     "Accept-Encoding": "gzip, deflate",
     "Accept-Language": "en_US",
 }
 
 AUTH_URL = "https://b-api.facebook.com/method/auth.login"
-GRAPH_URL = "https://graph.facebook.com/v19.0"
+GRAPH_URL = "https://b-graph.facebook.com"
 
 
 class MetaBusinessAPI:
