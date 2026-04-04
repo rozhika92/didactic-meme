@@ -38,6 +38,22 @@ python run.py get-pages --file accounts.txt
 python run.py full --file accounts.txt --name "PageName" --category 2256
 ```
 
+## Proxy Support
+
+- Put proxies in `proxies.txt`, one per line
+- Supported formats:
+  - `host:port:user:pass`
+  - `host:port`
+  - raw proxy URLs such as `http://user:pass@host:port`
+- Proxies rotate per account during batch execution
+- Pass `--proxy-file custom_proxies.txt` to use a different proxy list
+
+Example:
+
+```bash
+python run.py login --file accounts.txt --proxy-file proxies.txt
+```
+
 ## Credential format
 
 Each line in `accounts.txt` uses:

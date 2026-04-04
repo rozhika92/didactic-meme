@@ -49,12 +49,14 @@ GRAPH_URL = "https://graph.facebook.com/v19.0"
 class MetaBusinessAPI:
     """Client mimicking Meta Business Suite Android app API calls."""
 
-    def __init__(self):
+    def __init__(self, proxy: str = None):
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
         self.device_id = str(uuid.uuid4())
         self.adid = str(uuid.uuid4())
         self.family_device_id = str(uuid.uuid4())
+        if proxy:
+            self.session.proxies = {"http": proxy, "https": proxy}
 
     @staticmethod
     def _compute_sig(params: dict) -> str:

@@ -1,0 +1,7 @@
+# Proxy list — one per line
+# Format: host:port:username:password
+# Or: host:port (no auth)
+# Lines starting with # are comments
+#
+# Example:
+# geo.iproyal.com:11201:user:pass

@@ -32,6 +32,28 @@ def parse_accounts(filepath):
     return accounts
 
 
+def load_proxies(filepath):
+    """Load proxies from file. Format: host:port:user:pass (one per line). Comments/blank lines skipped."""
+    proxies = []
+    path = Path(filepath)
+    if not path.exists():
+        return proxies
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(":")
+            if len(parts) == 4:
+                host, port, user, pw = parts
+                proxies.append(f"http://{user}:{pw}@{host}:{port}")
+            elif len(parts) == 2:
+                proxies.append(f"http://{line}")
+            else:
+                proxies.append(line if "://" in line else f"http://{line}")
+    return proxies
+
+
 def append_line(filepath, line):
     with open(filepath, "a", encoding="utf-8") as handle:
         handle.write(f"{line}\n")
@@ -55,19 +77,24 @@ def make_summary():
     return {"success": 0, "checkpoint": 0, "disabled": 0, "errors": 0}
 
 
-def login_account(account):
-    client = MetaBusinessAPI()
+def login_account(account, proxy=None):
+    client = MetaBusinessAPI(proxy=proxy)
     return client, client.login(account["uid"], account["password"], account["totp_secret"])
 
 
 def handle_login(args):
     accounts = parse_accounts(args.file)
+    proxies = load_proxies(args.proxy_file)
     output_path = Path("tokens.txt")
     summary = make_summary()
 
     for index, account in enumerate(accounts, start=1):
         try:
-            client, result = login_account(account)
+            proxy = proxies[(index - 1) % len(proxies)] if proxies else None
+            if proxy:
+                display = proxy.split("@")[-1] if "@" in proxy else proxy.replace("http://", "")
+                print(f"  Using proxy: {display}")
+            client, result = login_account(account, proxy=proxy)
             status = result.get("status")
 
             if status == "ok":
@@ -118,12 +145,17 @@ def handle_login(args):
 
 def handle_create_page(args):
     accounts = parse_accounts(args.file)
+    proxies = load_proxies(args.proxy_file)
     output_path = Path("results.txt")
     summary = make_summary()
 
     for index, account in enumerate(accounts, start=1):
         try:
-            client, result = login_account(account)
+            proxy = proxies[(index - 1) % len(proxies)] if proxies else None
+            if proxy:
+                display = proxy.split("@")[-1] if "@" in proxy else proxy.replace("http://", "")
+                print(f"  Using proxy: {display}")
+            client, result = login_account(account, proxy=proxy)
             status = result.get("status")
 
             if status != "ok":
@@ -224,12 +256,17 @@ def render_pages_table(account_uid, pages):
 
 def handle_get_pages(args):
     accounts = parse_accounts(args.file)
+    proxies = load_proxies(args.proxy_file)
     output_path = Path("pages.txt")
     summary = make_summary()
 
     for index, account in enumerate(accounts, start=1):
         try:
-            client, result = login_account(account)
+            proxy = proxies[(index - 1) % len(proxies)] if proxies else None
+            if proxy:
+                display = proxy.split("@")[-1] if "@" in proxy else proxy.replace("http://", "")
+                print(f"  Using proxy: {display}")
+            client, result = login_account(account, proxy=proxy)
             status = result.get("status")
 
             if status != "ok":
@@ -287,6 +324,7 @@ def handle_get_pages(args):
 
 def handle_full(args):
     accounts = parse_accounts(args.file)
+    proxies = load_proxies(args.proxy_file)
     tokens_path = Path("tokens.txt")
     results_path = Path("results.txt")
     pages_path = Path("pages.txt")
@@ -294,7 +332,11 @@ def handle_full(args):
 
     for index, account in enumerate(accounts, start=1):
         try:
-            client, result = login_account(account)
+            proxy = proxies[(index - 1) % len(proxies)] if proxies else None
+            if proxy:
+                display = proxy.split("@")[-1] if "@" in proxy else proxy.replace("http://", "")
+                print(f"  Using proxy: {display}")
+            client, result = login_account(account, proxy=proxy)
             status = result.get("status")
 
             if status != "ok":
@@ -409,22 +451,26 @@ def build_parser():
 
     login_parser = subparsers.add_parser("login", help="Log in accounts and save tokens")
     login_parser.add_argument("--file", required=True, help="Path to accounts file")
+    login_parser.add_argument("--proxy-file", default="proxies.txt", help="Path to proxies file (default: proxies.txt)")
     login_parser.set_defaults(func=handle_login)
 
     create_page_parser = subparsers.add_parser("create-page", help="Create a page for each account")
     create_page_parser.add_argument("--file", required=True, help="Path to accounts file")
     create_page_parser.add_argument("--name", required=True, help="Page name to create")
     create_page_parser.add_argument("--category", default="2256", help="Page category ID")
+    create_page_parser.add_argument("--proxy-file", default="proxies.txt", help="Path to proxies file (default: proxies.txt)")
     create_page_parser.set_defaults(func=handle_create_page)
 
     get_pages_parser = subparsers.add_parser("get-pages", help="Fetch pages for each account")
     get_pages_parser.add_argument("--file", required=True, help="Path to accounts file")
+    get_pages_parser.add_argument("--proxy-file", default="proxies.txt", help="Path to proxies file (default: proxies.txt)")
     get_pages_parser.set_defaults(func=handle_get_pages)
 
     full_parser = subparsers.add_parser("full", help="Run login, create-page, and get-pages flow")
     full_parser.add_argument("--file", required=True, help="Path to accounts file")
     full_parser.add_argument("--name", required=True, help="Page name to create")
     full_parser.add_argument("--category", default="2256", help="Page category ID")
+    full_parser.add_argument("--proxy-file", default="proxies.txt", help="Path to proxies file (default: proxies.txt)")
     full_parser.set_defaults(func=handle_full)
 
     return parser
