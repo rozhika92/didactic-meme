@@ -79,6 +79,7 @@ def make_summary():
 
 def login_account(account, proxy=None):
     client = MetaBusinessAPI(proxy=proxy)
+    client.new_device_fingerprint(seed=account["uid"])
     return client, client.login(account["uid"], account["password"], account["totp_secret"])
 
 
