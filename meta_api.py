@@ -255,17 +255,33 @@ class MetaBusinessAPI:
             return {"error": True, "msg": data["error"]["message"], "pages": []}
         return {"error": False, "pages": data.get("data", []), "paging": data.get("paging")}
 
-    def create_page(self, access_token: str, user_id: str, page_name: str, category_id: str = "2256") -> dict:
-        """POST /{user_id}/accounts"""
+    def create_page(self, access_token: str, user_id: str, page_name: str, category_id: str = "2200") -> dict:
+        """POST /{user_id}/accounts — create a Facebook Page."""
         r = self.session.post(
             f"{GRAPH_URL}/{user_id}/accounts",
-            data={"name": page_name, "category_enum": category_id, "access_token": access_token},
+            data={
+                "name": page_name,
+                "category_list": f'["{category_id}"]',
+                "access_token": access_token,
+            },
             timeout=15,
         )
         data = r.json()
         if "error" in data:
             return {"error": True, "msg": data["error"]["message"]}
         return {"error": False, "data": data}
+
+    def search_page_categories(self, access_token: str, query: str) -> list:
+        """Search for valid page category IDs. Returns list of {id, name} dicts."""
+        r = self.session.get(
+            f"{GRAPH_URL}/pages/search",
+            params={"type": "placetopic", "q": query, "access_token": access_token},
+            timeout=15,
+        )
+        data = r.json()
+        if "error" in data:
+            return []
+        return data.get("data", [])
 
     def search_categories(self, access_token: str, query: str) -> dict:
         """Search page categories."""

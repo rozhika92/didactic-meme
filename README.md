@@ -23,7 +23,7 @@ python run.py login --file accounts.txt
 ### Create a page for each account
 
 ```bash
-python run.py create-page --file accounts.txt --name "PageName" --category 2256
+python run.py create-page --file accounts.txt --name "PageName" --category 2200
 ```
 
 ### Fetch all pages for each account
@@ -35,8 +35,42 @@ python run.py get-pages --file accounts.txt
 ### Full workflow
 
 ```bash
-python run.py full --file accounts.txt --name "PageName" --category 2256
+python run.py full --file accounts.txt --name "PageName" --category 2200
 ```
+
+## CLI flags
+
+All commands support:
+
+- `--threads N` to process accounts concurrently with `ThreadPoolExecutor` (default: `5`)
+- `--delay SECONDS` to add a per-thread delay between accounts and reduce rate-limit spikes (default: `1.0`)
+- `--proxy-file PATH` to override the proxy list file
+
+Examples:
+
+```bash
+python run.py login --file accounts.txt --threads 10 --delay 0.5
+python run.py create-page --file accounts.txt --name "PageName" --category 2200 --threads 3 --delay 2
+```
+
+## Output files
+
+Each run creates timestamped artifacts:
+
+- `logs/YYYY-MM-DD_HHMMSS.log` — per-request execution log with timestamps
+- `results/tokens_YYYYMMDD_HHMMSS.txt` — `uid|access_token|name`
+- `results/pages_YYYYMMDD_HHMMSS.txt` — `uid|page_id|page_name|page_token|category`
+- `results/created_YYYYMMDD_HHMMSS.txt` — `page_id|page_name|page_token|owner_uid`
+- `results/errors_YYYYMMDD_HHMMSS.txt` — `uid|status|error_message`
+
+`login` writes token and error files, `get-pages` writes page and error files, `create-page` writes created-page and error files, and `full` writes all of them.
+
+## Multi-threading behavior
+
+- Accounts are distributed across worker threads in round-robin order
+- Proxies are still assigned round-robin per account
+- Delay is applied inside each worker thread between consecutive accounts handled by that worker
+- Failures are isolated per account; one exception never stops the whole batch
 
 ## Proxy Support
 
