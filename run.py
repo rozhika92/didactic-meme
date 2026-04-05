@@ -31,6 +31,7 @@ class RunState:
             "total": 0,
             "success": 0,
             "checkpoint": 0,
+            "rate_limit": 0,
             "disabled": 0,
             "wrong_pass": 0,
             "errors": 0,
@@ -154,6 +155,8 @@ def checkpoint_like(message: str) -> bool:
 def classify_login_failure(result: dict) -> tuple[str, str, str, str]:
     status = result.get("status")
     message = result.get("error_msg", "Unknown error")
+    if status == "rate_limit":
+        return "rate_limit", "🚫", YELLOW, message
     if status == "checkpoint" or checkpoint_like(message):
         return "checkpoint", "⚠️", YELLOW, message
     if status == "disabled":
@@ -197,6 +200,8 @@ def log_login_result(logger: logging.Logger, uid: str, proxy: Optional[str], res
         logger.info("Login %s via %s → OK (token: %s)", uid, route, token_preview(result.get("access_token", "")))
     elif status == "checkpoint":
         logger.warning("Login %s via %s → CHECKPOINT (%s)", uid, route, result.get("error_msg", "Unknown error"))
+    elif status == "rate_limit":
+        logger.warning("Login %s via %s → RATE_LIMIT (%s)", uid, route, result.get("error_msg", "Unknown error"))
     elif status == "wrong_pass":
         logger.error("Login %s via %s → WRONG_PASS (%s)", uid, route, result.get("error_msg", "Unknown error"))
     elif status == "disabled":
@@ -428,6 +433,7 @@ def print_summary(summary: dict[str, int], command: str, result_paths: dict[str,
         f" Total:      {summary['total']}",
         f" ✅ Success:  {summary['success']}",
         f" ⚠️  Checkpoint: {summary['checkpoint']}",
+        f" 🚫 Rate limited: {summary['rate_limit']}",
         f" ❌ Disabled: {summary['disabled']}",
         f" ❌ Wrong pass: {summary['wrong_pass']}",
         f" ❌ Errors:   {summary['errors']}",
@@ -452,7 +458,7 @@ def add_common_args(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--file", required=True, help="Path to accounts file")
     subparser.add_argument("--proxy-file", default="proxies.txt", help="Path to proxies file (default: proxies.txt)")
     subparser.add_argument("--threads", type=int, default=5, help="Number of worker threads (default: 5)")
-    subparser.add_argument("--delay", type=float, default=1.0, help="Delay in seconds between accounts per thread (default: 1.0)")
+    subparser.add_argument("--delay", type=float, default=1.0, help="Delay in seconds between accounts per thread (default: 1.0, recommend: 2.0)")
 
 
 def build_parser() -> argparse.ArgumentParser:

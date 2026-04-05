@@ -1,6 +1,6 @@
 """
 Meta Business Suite API Client
-Reverse-engineered from com.facebook.pages.app v546.0.0.56.106
+Reverse-engineered from com.facebook.pages.app v547.0.0.40.109
 University research project — educational use only
 """
 
@@ -20,22 +20,24 @@ from urllib3.util.retry import Retry
 API_KEY = "121876164619130"
 API_SECRET = "1ab2c5c902faedd339c14b2d58e929dc"
 APP_ID = "121876164619130"
-APP_VERSION = "546.0.0.56.106"
-BUILD_NUM = "917854681"
+APP_VERSION = "547.0.0.40.109"
+BUILD_NUM = "922914753"
 
-# Full User-Agent matching C3JY.java UA builder from decompiled APK
+# Full User-Agent matching C3JI.java / C02560Bv.java UA builders from decompiled APK
 USER_AGENT = (
     "Dalvik/2.1.0 (Linux; U; Android 13; Pixel 6 Build/TQ3A.230901.001) "
     "[FBAN/PagesManager;"
-    "FBAV/546.0.0.56.106;"
+    "FBAV/547.0.0.40.109;"
     "FBPN/com.facebook.pages.app;"
     "FBLC/en_US;"
-    "FBBV/917854681;"
+    "FBBV/922914753;"
     "FBCR/;"
     "FBMF/Google;"
     "FBBD/google;"
     "FBDV/Pixel 6;"
     "FBSV/13.0;"
+    "FBLR/0;"
+    "FBBK/1;"
     "FBCA/arm64-v8a:armeabi-v7a;"
     "FBDM/{density=2.75,width=1080,height=2400};"
     "FB_FW/1;]"
@@ -114,43 +116,30 @@ class MetaBusinessAPI:
         return f"2{sum(ord(c) for c in uid)}"
 
     def _build_login_params(self, uid: str, password: str) -> dict:
-        """Build login params matching decompiled C0ML.java AuthenticateMethod."""
+        """Build login params matching AlohaAuthenticateMethod from C0MQ.java."""
         params = {
-            # Core auth
-            "api_key": API_KEY,
-            "credentials_type": "password",
-            "email": uid,
-            "format": "json",
+            # Framework-level params
+            "api_key": APP_ID,
             "method": "auth.login",
-            "password": password,
             "v": "1.0",
+            "format": "json",
             "locale": "en_US",
             "client_country_code": "US",
-            # Session
-            "generate_machine_id": "1",
-            "generate_session_cookies": "1",
-            "generate_analytics_claim": "1",
-            # Device fingerprint
-            "device_id": self.device_id,
-            "adid": self.adid,
-            "advertiser_id": self.adid,
-            "family_device_id": self.family_device_id,
-            "secure_family_device_id": self.device_id,
-            # App identification
-            "fb_api_req_friendly_name": "authenticate",
-            "fb_api_caller_class": "AuthOperations",
+            # AlohaAuthenticateMethod params
             "meta_inf_fbmeta": "",
+            "adid": self.adid,
+            "device_id": self.device_id,
+            "email": uid,
+            "password": password,
             "cpl": "true",
-            "try_num": "1",
-            "currently_logged_in_userid": "0",
-            "enroll_misauth": "false",
-            "return_ssl_resources": "0",
-            # Device info
-            "device_name": "Pixel 6",
-            "device_model_name": "Pixel 6",
+            "proxy_user_id": "",
+            "proxy_signed_proxy_user_id": "",
+            "family_device_id": self.family_device_id,
             "sim_serials": "[]",
-            "encrypted_msisdn": "",
-            "jazoest": self._compute_jazoest(uid),
+            "credentials_type": "password",
+            "generate_session_cookies": "1",
+            "generate_machine_id": "1",
+            "currently_logged_in_userid": "0",
         }
         return params
 
@@ -159,7 +148,7 @@ class MetaBusinessAPI:
         Full login flow with automatic 2FA handling.
 
         Returns dict with keys:
-          status: "ok" | "checkpoint" | "disabled" | "wrong_pass" | "error"
+          status: "ok" | "checkpoint" | "disabled" | "wrong_pass" | "rate_limit" | "error"
           access_token, uid, session_cookies, machine_id, secret (when ok)
           error_msg (when not ok)
         """
@@ -187,10 +176,13 @@ class MetaBusinessAPI:
             return {"status": "disabled", "error_msg": "Account disabled or banned"}
         if error_code == 401:
             return {"status": "wrong_pass", "error_msg": "Invalid credentials"}
+        if error_code == 368:
+            return {"status": "rate_limit", "error_msg": result.get("error_msg", "Rate limited")}
 
         if error_code == 406:
+            raw_error_data = result.get("error_data", "{}")
             try:
-                error_data = json.loads(result.get("error_data", "{}"))
+                error_data = raw_error_data if isinstance(raw_error_data, dict) else json.loads(raw_error_data)
             except json.JSONDecodeError:
                 return {"status": "error", "error_msg": "Failed to parse 2FA error data"}
             if "login_first_factor" not in error_data:
@@ -205,6 +197,7 @@ class MetaBusinessAPI:
                 "first_factor": error_data["login_first_factor"],
                 "machine_id": error_data["machine_id"],
             })
+            params2.pop("generate_machine_id", None)
             params2["sig"] = self._compute_sig(params2)
 
             try:
@@ -224,7 +217,7 @@ class MetaBusinessAPI:
                 }
             sub = result2.get("error_code", "?")
             msg = result2.get("error_msg", "Unknown 2FA error")
-            if sub == 490 or "checkpoint" in msg.lower():
+            if sub == 405 or sub == 490 or "checkpoint" in msg.lower() or "verify" in msg.lower():
                 return {"status": "checkpoint", "error_msg": msg}
             return {"status": "error", "error_msg": f"2FA failed ({sub}): {msg}"}
 
