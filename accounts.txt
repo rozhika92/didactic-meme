@@ -1,0 +1,8 @@
+# Meta Business Suite API Research Tool — Account List
+# Format: uid|password|2fa_secret
+# uid can be numeric ID or email
+# 2fa_secret is Base32 encoded (spaces are stripped automatically)
+#
+# Example:
+# 61578547817231|VLteam26032026|HRW4YZLQ2JDTX6WY765NFL7ESMKJV3QC
+# user@example.com|MyPassword123|JBSW Y3DP EHPK 3PXP
