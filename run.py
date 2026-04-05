@@ -184,8 +184,8 @@ def finalize_success(state: RunState, color: str, uid: str, detail: str) -> None
     state.emit(color, f"[{progress}/{state.total}] ✅ {uid} → {detail}")
 
 
-def login_account(account: dict[str, str], proxy: Optional[str] = None) -> tuple[MetaBusinessAPI, dict]:
-    client = MetaBusinessAPI(proxy=proxy)
+def login_account(account: dict[str, str], proxy: Optional[str] = None, identity: str = "katana") -> tuple[MetaBusinessAPI, dict]:
+    client = MetaBusinessAPI(proxy=proxy, identity=identity)
     client.new_device_fingerprint(seed=account["uid"])
     return client, client.login(account["uid"], account["password"], account["totp_secret"])
 
@@ -232,9 +232,9 @@ def create_page(client: MetaBusinessAPI, logger: logging.Logger, uid: str, acces
     return created
 
 
-def process_login(state: RunState, account: dict[str, str], proxy: Optional[str]) -> None:
+def process_login(state: RunState, account: dict[str, str], proxy: Optional[str], identity: str) -> None:
     uid = account["uid"]
-    client, result = login_account(account, proxy=proxy)
+    client, result = login_account(account, proxy=proxy, identity=identity)
     log_login_result(state.logger, uid, proxy, result)
     if result.get("status") != "ok":
         summary_key, symbol, color, message = classify_login_failure(result)
@@ -258,9 +258,9 @@ def process_login(state: RunState, account: dict[str, str], proxy: Optional[str]
     finalize_success(state, GREEN, uid, f"{user_info.get('name', '')} | Pages: {page_count} | Token: {token_preview(access_token)}")
 
 
-def process_create_page(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: str) -> None:
+def process_create_page(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: str, identity: str) -> None:
     uid = account["uid"]
-    client, result = login_account(account, proxy=proxy)
+    client, result = login_account(account, proxy=proxy, identity=identity)
     log_login_result(state.logger, uid, proxy, result)
     if result.get("status") != "ok":
         summary_key, symbol, color, message = classify_login_failure(result)
@@ -303,9 +303,9 @@ def process_create_page(state: RunState, account: dict[str, str], proxy: Optiona
     )
 
 
-def process_get_pages(state: RunState, account: dict[str, str], proxy: Optional[str]) -> None:
+def process_get_pages(state: RunState, account: dict[str, str], proxy: Optional[str], identity: str) -> None:
     uid = account["uid"]
-    client, result = login_account(account, proxy=proxy)
+    client, result = login_account(account, proxy=proxy, identity=identity)
     log_login_result(state.logger, uid, proxy, result)
     if result.get("status") != "ok":
         summary_key, symbol, color, message = classify_login_failure(result)
@@ -332,9 +332,9 @@ def process_get_pages(state: RunState, account: dict[str, str], proxy: Optional[
     finalize_success(state, GREEN, uid, f"{owner_label} | Pages: {len(pages)}")
 
 
-def process_full(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: str) -> None:
+def process_full(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: str, identity: str) -> None:
     uid = account["uid"]
-    client, result = login_account(account, proxy=proxy)
+    client, result = login_account(account, proxy=proxy, identity=identity)
     log_login_result(state.logger, uid, proxy, result)
     if result.get("status") != "ok":
         summary_key, symbol, color, message = classify_login_failure(result)
@@ -392,13 +392,13 @@ def process_full(state: RunState, account: dict[str, str], proxy: Optional[str],
 def process_account(state: RunState, account: dict[str, str], proxy: Optional[str], args: argparse.Namespace) -> None:
     try:
         if state.command == "login":
-            process_login(state, account, proxy)
+            process_login(state, account, proxy, args.identity)
         elif state.command == "create-page":
-            process_create_page(state, account, proxy, args.name, args.category)
+            process_create_page(state, account, proxy, args.name, args.category, args.identity)
         elif state.command == "get-pages":
-            process_get_pages(state, account, proxy)
+            process_get_pages(state, account, proxy, args.identity)
         elif state.command == "full":
-            process_full(state, account, proxy, args.name, args.category)
+            process_full(state, account, proxy, args.name, args.category, args.identity)
         else:
             raise ValueError(f"Unsupported command: {state.command}")
     except Exception as exc:
@@ -453,6 +453,8 @@ def add_common_args(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--proxy-file", default="proxies.txt", help="Path to proxies file (default: proxies.txt)")
     subparser.add_argument("--threads", type=int, default=5, help="Number of worker threads (default: 5)")
     subparser.add_argument("--delay", type=float, default=1.0, help="Delay in seconds between accounts per thread (default: 1.0)")
+    subparser.add_argument("--identity", choices=["katana", "pages_manager"], default="katana",
+                           help="App identity to use (default: katana)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -475,10 +477,18 @@ def build_parser() -> argparse.ArgumentParser:
     full_parser.add_argument("--name", required=True, help="Page name to create")
     full_parser.add_argument("--category", default="2200", help="Page category ID (default: 2200)")
 
+    search_parser = subparsers.add_parser("search-categories", help="Search page categories")
+    search_parser.add_argument("--query", required=True, help="Category search query")
+    search_parser.add_argument("--token", required=True, help="Access token to use")
+    search_parser.add_argument("--identity", choices=["katana", "pages_manager"], default="katana",
+                               help="App identity to use (default: katana)")
+
     return parser
 
 
 def validate_args(args: argparse.Namespace) -> None:
+    if args.command == "search-categories":
+        return
     if args.threads < 1:
         raise ValueError("--threads must be >= 1")
     if args.delay < 0:
@@ -487,6 +497,16 @@ def validate_args(args: argparse.Namespace) -> None:
 
 def run_command(args: argparse.Namespace) -> None:
     validate_args(args)
+    if args.command == "search-categories":
+        client = MetaBusinessAPI(identity=args.identity)
+        result = client.search_categories(args.token, args.query)
+        if result.get("error"):
+            print(f"Error: {result['msg']}")
+        else:
+            for cat in result.get("categories", []):
+                print(f"  {cat.get('id')} — {cat.get('name')}")
+        return
+
     accounts = parse_accounts(args.file)
     if not accounts:
         raise ValueError("No valid accounts found in input file")
@@ -509,8 +529,9 @@ def run_command(args: argparse.Namespace) -> None:
     proxies = load_proxies(args.proxy_file)
     lanes = build_lanes(accounts, proxies, args.threads)
     logger.info(
-        "Starting command=%s accounts=%s threads=%s delay=%s proxies=%s",
+        "Starting command=%s identity=%s accounts=%s threads=%s delay=%s proxies=%s",
         args.command,
+        args.identity,
         len(accounts),
         len(lanes),
         args.delay,
@@ -522,7 +543,7 @@ def run_command(args: argparse.Namespace) -> None:
         for future in as_completed(futures):
             future.result()
 
-    logger.info("Completed command=%s summary=%s", args.command, state.summary)
+    logger.info("Completed command=%s identity=%s summary=%s", args.command, args.identity, state.summary)
     print_summary(state.summary, args.command, result_paths, log_path)
     for handler in logger.handlers[:]:
         handler.close()

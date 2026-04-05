@@ -1,6 +1,6 @@
 """
 Meta Business Suite API Client
-Reverse-engineered from com.facebook.pages.app v546.0.0.56.106
+Reverse-engineered from com.facebook.pages.app and com.facebook.katana
 University research project — educational use only
 """
 
@@ -16,57 +16,105 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 
-# App identity extracted from APK decompilation
-API_KEY = "121876164619130"
-API_SECRET = "1ab2c5c902faedd339c14b2d58e929dc"
-APP_ID = "121876164619130"
-APP_VERSION = "546.0.0.56.106"
-BUILD_NUM = "917854681"
-
-# Full User-Agent matching C3JY.java UA builder from decompiled APK
-USER_AGENT = (
-    "Dalvik/2.1.0 (Linux; U; Android 13; Pixel 6 Build/TQ3A.230901.001) "
-    "[FBAN/PagesManager;"
-    "FBAV/546.0.0.56.106;"
-    "FBPN/com.facebook.pages.app;"
-    "FBLC/en_US;"
-    "FBBV/917854681;"
-    "FBCR/;"
-    "FBMF/Google;"
-    "FBBD/google;"
-    "FBDV/Pixel 6;"
-    "FBSV/13.0;"
-    "FBCA/arm64-v8a:armeabi-v7a;"
-    "FBDM/{density=2.75,width=1080,height=2400};"
-    "FB_FW/1;]"
-)
-
-# Headers matching Tigon HTTP client (C32H.java, C34E.java, AbstractC62042STp.java)
-HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Content-Type": "application/x-www-form-urlencoded",
-    "X-FB-HTTP-Engine": "Liger",
-    "X-FB-Connection-Quality": "EXCELLENT",
-    "X-FB-Friendly-Name": "authenticate",
-    "Accept-Encoding": "gzip, deflate",
-    "Accept-Language": "en_US",
+# App identities extracted from APK decompilation
+IDENTITIES = {
+    "katana": {
+        "api_key": "350685531728",
+        "api_secret": "62f8ce9f74b12f84c123cc23437a4a32",
+        "app_version": "555.0.0.49.59",
+        "build_num": "470015326",
+        "fban": "FB4A",
+        "package": "com.facebook.katana",
+        "ua_suffix_tags": "FBLR/0;FBBK/1;",
+    },
+    "pages_manager": {
+        "api_key": "121876164619130",
+        "api_secret": "1ab2c5c902faedd339c14b2d58e929dc",
+        "app_version": "546.0.0.56.106",
+        "build_num": "917854681",
+        "fban": "PagesManager",
+        "package": "com.facebook.pages.app",
+        "ua_suffix_tags": "FB_FW/1;",
+    },
 }
+
+DEFAULT_IDENTITY = "katana"
 
 AUTH_URL = "https://b-api.facebook.com/method/auth.login"
 GRAPH_URL = "https://b-graph.facebook.com"
 
 
-class MetaBusinessAPI:
-    """Client mimicking Meta Business Suite Android app API calls."""
+def build_user_agent(
+    identity_name: str = DEFAULT_IDENTITY,
+    device: str = "Pixel 6",
+    android_version: str = "13",
+    build_tag: str = "TQ3A.230901.001",
+) -> str:
+    """Build User-Agent string matching the APK's UA builder."""
+    ident = IDENTITIES[identity_name]
+    if identity_name == "katana":
+        # Katana tag order: FBAN, FBAV, FBBV, FBDM, FBLC, FBCR, FBMF, FBBD, FBPN, FBDV, FBSV, FBLR, FBBK, FBCA
+        tags = (
+            f"FBAN/{ident['fban']};"
+            f"FBAV/{ident['app_version']};"
+            f"FBBV/{ident['build_num']};"
+            f"FBDM/{{density=2.75,width=1080,height=2400}};"
+            f"FBLC/en_US;"
+            f"FBCR/;"
+            f"FBMF/Google;"
+            f"FBBD/google;"
+            f"FBPN/{ident['package']};"
+            f"FBDV/{device};"
+            f"FBSV/{android_version};"
+            f"{ident['ua_suffix_tags']}"
+            f"FBCA/arm64-v8a:armeabi-v7a;"
+        )
+    else:
+        # Pages Manager tag order: FBAN, FBAV, FBPN, FBLC, FBBV, FBCR, FBMF, FBBD, FBDV, FBSV, FBCA, FBDM, FB_FW
+        tags = (
+            f"FBAN/{ident['fban']};"
+            f"FBAV/{ident['app_version']};"
+            f"FBPN/{ident['package']};"
+            f"FBLC/en_US;"
+            f"FBBV/{ident['build_num']};"
+            f"FBCR/;"
+            f"FBMF/Google;"
+            f"FBBD/google;"
+            f"FBDV/{device};"
+            f"FBSV/{android_version};"
+            f"FBCA/arm64-v8a:armeabi-v7a;"
+            f"FBDM={{density=2.75,width=1080,height=2400}};"
+            f"{ident['ua_suffix_tags']}"
+        )
+    return (
+        f"Dalvik/2.1.0 (Linux; U; Android {android_version}; "
+        f"{device} Build/{build_tag}) [{tags}]"
+    )
 
-    def __init__(self, proxy: str = None):
+
+class MetaBusinessAPI:
+    """Client mimicking Meta Business Suite / Facebook Android app API calls."""
+
+    def __init__(self, proxy: str = None, identity: str = DEFAULT_IDENTITY):
+        self.identity = identity
+        self.ident = IDENTITIES[identity]
         self.session = requests.Session()
-        self.session.headers.update(HEADERS)
         # Retry on proxy/connection errors
         retry = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
         adapter = HTTPAdapter(max_retries=retry)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
+        # Build identity-specific headers
+        ua = build_user_agent(identity)
+        self.session.headers.update({
+            "User-Agent": ua,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-FB-HTTP-Engine": "Liger",
+            "X-FB-Connection-Quality": "EXCELLENT",
+            "X-FB-Friendly-Name": "authenticate",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en_US",
+        })
         # Default device fingerprint
         self.device_id = str(uuid.uuid4())
         self.adid = str(uuid.uuid4())
@@ -88,10 +136,9 @@ class MetaBusinessAPI:
             self.adid = str(uuid.uuid4())
             self.family_device_id = str(uuid.uuid4())
 
-    @staticmethod
-    def _compute_sig(params: dict) -> str:
+    def _compute_sig(self, params: dict) -> str:
         """MD5 signature: sort params, concat key=value, append secret, hash."""
-        sig_str = "".join(f"{k}={v}" for k, v in sorted(params.items())) + API_SECRET
+        sig_str = "".join(f"{k}={v}" for k, v in sorted(params.items())) + self.ident["api_secret"]
         return hashlib.md5(sig_str.encode()).hexdigest()
 
     @staticmethod
@@ -114,10 +161,10 @@ class MetaBusinessAPI:
         return f"2{sum(ord(c) for c in uid)}"
 
     def _build_login_params(self, uid: str, password: str) -> dict:
-        """Build login params matching decompiled C0ML.java AuthenticateMethod."""
+        """Build login params matching decompiled AuthenticateMethod."""
         params = {
             # Core auth
-            "api_key": API_KEY,
+            "api_key": self.ident["api_key"],
             "credentials_type": "password",
             "email": uid,
             "format": "json",
@@ -270,18 +317,6 @@ class MetaBusinessAPI:
         if "error" in data:
             return {"error": True, "msg": data["error"]["message"]}
         return {"error": False, "data": data}
-
-    def search_page_categories(self, access_token: str, query: str) -> list:
-        """Search for valid page category IDs. Returns list of {id, name} dicts."""
-        r = self.session.get(
-            f"{GRAPH_URL}/pages/search",
-            params={"type": "placetopic", "q": query, "access_token": access_token},
-            timeout=15,
-        )
-        data = r.json()
-        if "error" in data:
-            return []
-        return data.get("data", [])
 
     def search_categories(self, access_token: str, query: str) -> dict:
         """Search page categories."""
