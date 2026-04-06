@@ -1,0 +1,7 @@
+# Viber Phone Number Checker - Contact List
+# Add phone numbers in international format (one per line)
+# Lines starting with # are comments
++60111234567
++60129876543
++14155551234
++447911123456

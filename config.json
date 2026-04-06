@@ -1,0 +1,6 @@
+{
+    "token": "",
+    "uid": "",
+    "first_time": 1,
+    "webhook_url": "https://httpbin.org/post"
+}
