@@ -225,12 +225,12 @@ def fetch_pages(client: MetaBusinessAPI, logger: logging.Logger, uid: str, acces
     return pages_result
 
 
-def create_page(client: MetaBusinessAPI, logger: logging.Logger, uid: str, access_token: str, owner_uid: str, page_name: str, category: str) -> dict:
+def create_page(client: MetaBusinessAPI, logger: logging.Logger, uid: str, access_token: str, owner_uid: str, page_name: str, category: Optional[str]) -> dict:
     created = client.create_page(access_token, owner_uid, page_name, category)
     if created.get("error"):
         logger.error("Create page %s → %s", uid, created.get("msg", "Unknown error"))
     else:
-        logger.info("Create page %s → OK", uid)
+        logger.info("Create page %s → OK via %s", uid, created.get("method", "unknown"))
     return created
 
 
@@ -260,7 +260,7 @@ def process_login(state: RunState, account: dict[str, str], proxy: Optional[str]
     finalize_success(state, GREEN, uid, f"{user_info.get('name', '')} | Pages: {page_count} | Token: {token_preview(access_token)}")
 
 
-def process_create_page(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: str, identity: str) -> None:
+def process_create_page(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: Optional[str], identity: str) -> None:
     uid = account["uid"]
     client, result = login_account(account, proxy=proxy, identity=identity)
     log_login_result(state.logger, uid, proxy, result)
@@ -334,7 +334,7 @@ def process_get_pages(state: RunState, account: dict[str, str], proxy: Optional[
     finalize_success(state, GREEN, uid, f"{owner_label} | Pages: {len(pages)}")
 
 
-def process_full(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: str, identity: str) -> None:
+def process_full(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: Optional[str], identity: str) -> None:
     uid = account["uid"]
     client, result = login_account(account, proxy=proxy, identity=identity)
     log_login_result(state.logger, uid, proxy, result)
@@ -469,7 +469,8 @@ def build_parser() -> argparse.ArgumentParser:
     create_page_parser = subparsers.add_parser("create-page", help="Create a page for each account")
     add_common_args(create_page_parser)
     create_page_parser.add_argument("--name", required=True, help="Page name to create")
-    create_page_parser.add_argument("--category", default="2200", help="Page category ID (default: 2200)")
+    create_page_parser.add_argument("--category", default=None,
+                                    help="Page category ID (auto-detected if not specified)")
 
     get_pages_parser = subparsers.add_parser("get-pages", help="Fetch pages for each account")
     add_common_args(get_pages_parser)
@@ -477,7 +478,8 @@ def build_parser() -> argparse.ArgumentParser:
     full_parser = subparsers.add_parser("full", help="Run login, create-page, and get-pages flow")
     add_common_args(full_parser)
     full_parser.add_argument("--name", required=True, help="Page name to create")
-    full_parser.add_argument("--category", default="2200", help="Page category ID (default: 2200)")
+    full_parser.add_argument("--category", default=None,
+                             help="Page category ID (auto-detected if not specified)")
 
     search_parser = subparsers.add_parser("search-categories", help="Search page categories")
     search_parser.add_argument("--query", required=True, help="Category search query")
@@ -507,6 +509,8 @@ def run_command(args: argparse.Namespace) -> None:
         else:
             for cat in result.get("categories", []):
                 print(f"  {cat.get('id')} — {cat.get('name')}")
+            if result.get("categories"):
+                print("\nNote: --category is optional for create-page/full; valid categories can be auto-detected.")
         return
 
     accounts = parse_accounts(args.file)

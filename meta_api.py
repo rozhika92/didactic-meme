@@ -4,15 +4,19 @@ Reverse-engineered from com.facebook.pages.app and com.facebook.katana
 University research project — educational use only
 """
 
+import base64
 import hashlib
 import hmac
+import json
+import logging
+import random
 import struct
 import time
-import base64
-import json
 import uuid
-import random
 from curl_cffi import requests as curl_requests
+
+
+logger = logging.getLogger(__name__)
 
 
 # App identities extracted from APK decompilation
@@ -29,11 +33,11 @@ IDENTITIES = {
     "pages_manager": {
         "api_key": "121876164619130",
         "api_secret": "1ab2c5c902faedd339c14b2d58e929dc",
-        "app_version": "546.0.0.56.106",
-        "build_num": "917854681",
-        "fban": "PagesManager",
+        "app_version": "545.0.0.58.109",
+        "build_num": "909563321",
+        "fban": "PAAA",
         "package": "com.facebook.pages.app",
-        "ua_suffix_tags": "FB_FW/1;",
+        "ua_suffix_tags": "FB_FW/2;FBSN/Android;FBDI/null;",
     },
 }
 
@@ -69,24 +73,23 @@ def build_user_agent(
             f"FBCA/arm64-v8a:armeabi-v7a;"
         )
     else:
-        # Pages Manager tag order: FBAN, FBAV, FBPN, FBLC, FBBV, FBCR, FBMF, FBBD, FBDV, FBSV, FBCA, FBDM, FB_FW
+        pages_android_version = android_version if android_version != "13.0" else "13"
         tags = (
             f"FBAN/{ident['fban']};"
             f"FBAV/{ident['app_version']};"
-            f"FBPN/{ident['package']};"
+            f"FBDM/{{density=2.75,width=1080,height=2400}};"
             f"FBLC/en_US;"
             f"FBBV/{ident['build_num']};"
+            f"{ident['ua_suffix_tags']}"
             f"FBCR/;"
             f"FBMF/Google;"
             f"FBBD/google;"
             f"FBDV/{device};"
-            f"FBSV/{android_version};"
-            f"FBCA/arm64-v8a:armeabi-v7a;"
-            f"FBDM={{density=2.75,width=1080,height=2400}};"
-            f"{ident['ua_suffix_tags']}"
+            f"FBSV/{pages_android_version};"
+            f"FBCA/arm64-v8a:null;"
         )
     return (
-        f"Dalvik/2.1.0 (Linux; U; Android {android_version}; "
+        f"Dalvik/2.1.0 (Linux; U; Android {pages_android_version if identity_name == 'pages_manager' else android_version}; "
         f"{device} Build/{build_tag}) [{tags}]"
     )
 
@@ -119,6 +122,21 @@ class MetaBusinessAPI:
             "Accept-Encoding": "gzip, deflate",
             "Accept-Language": "en_US",
         })
+        if identity == "pages_manager":
+            self.session.headers.update({
+                "x-graphql-client-library": "graphservice",
+                "x-graphql-request-purpose": "fetch",
+                "X-FB-HTTP-Engine": "Tigon/Liger",
+                "x-fb-request-analytics-tags": json.dumps({
+                    "network_tags": {
+                        "product": self.ident["api_key"],
+                        "request_category": "graphql",
+                        "purpose": "fetch",
+                        "retry_attempt": "0",
+                    },
+                    "application_tags": "graphservice",
+                }),
+            })
         # Default device fingerprint
         self.device_id = str(uuid.uuid4())
         self.adid = str(uuid.uuid4())
@@ -139,6 +157,82 @@ class MetaBusinessAPI:
                 if attempt < max_retries - 1:
                     time.sleep(1 * (attempt + 1))
         raise last_error
+
+    @staticmethod
+    def _checkpoint_error(message: str) -> dict:
+        return {"error": True, "status": "checkpoint", "msg": message}
+
+    @staticmethod
+    def _api_error(message: str, status: str = "api_error") -> dict:
+        return {"error": True, "status": status, "msg": message}
+
+    def _parse_json_response(self, response, empty_payload: dict):
+        if response.headers.get("x-fb-integrity-required") == "checkpoint":
+            return self._checkpoint_error("Account requires checkpoint verification")
+
+        if not response.content:
+            return {**empty_payload, "error": True, "status": "empty_response", "msg": f"Empty response (HTTP {response.status_code})"}
+
+        try:
+            return response.json()
+        except (ValueError, json.JSONDecodeError):
+            return {**empty_payload, "error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {response.status_code})"}
+
+    @staticmethod
+    def _extract_graphql_message(payload: dict) -> tuple[str, str]:
+        errors = payload.get("errors") or []
+        if errors:
+            first = errors[0] or {}
+            message = first.get("message") or payload.get("message") or "Unknown GraphQL error"
+            code = str(first.get("code") or first.get("error_subcode") or first.get("extensions", {}).get("code") or "")
+            return message, code
+        return payload.get("message", "Unknown GraphQL error"), ""
+
+    def _graphql_success_result(self, payload: dict) -> dict | None:
+        page = ((payload.get("data") or {}).get("biz_app_create_page") or {}).get("page")
+        if not page:
+            page = ((payload.get("data") or {}).get("page_create") or {}).get("page")
+        if not page:
+            return None
+        return {
+            "error": False,
+            "data": {
+                "id": page.get("id"),
+                "name": page.get("name"),
+            },
+            "method": "graphql",
+        }
+
+    def _normalize_graph_payload_error(self, payload: dict) -> dict | None:
+        error_block = payload.get("error")
+        if not error_block:
+            return None
+        if payload.get("status") and payload.get("msg"):
+            return payload
+        if isinstance(error_block, dict):
+            message = error_block.get("message", "Unknown API error")
+            subcode = str(error_block.get("error_subcode", ""))
+            if subcode == "490" or "checkpoint" in message.lower():
+                return self._checkpoint_error(message)
+            return self._api_error(message)
+        return self._api_error(str(error_block))
+
+    @staticmethod
+    def _extract_category_results(payload: dict) -> list[dict]:
+        data = payload.get("data") or {}
+        candidates = []
+        if isinstance(data.get("page_category_search"), list):
+            candidates = data["page_category_search"]
+        elif isinstance(data.get("page_category_search"), dict):
+            candidates = data["page_category_search"].get("data", [])
+
+        categories = []
+        for item in candidates or []:
+            category_id = item.get("id")
+            name = item.get("name")
+            if category_id and name:
+                categories.append({"id": str(category_id), "name": name})
+        return categories
 
     def new_device_fingerprint(self, seed: str = None):
         """Generate device IDs. If seed is given, IDs are deterministic (stable per-account)."""
@@ -370,8 +464,145 @@ class MetaBusinessAPI:
             self.session.headers["Authorization"] = "OAuth null"
             self.session.headers["X-FB-Friendly-Name"] = "authenticate"
 
-    def create_page(self, access_token: str, user_id: str, page_name: str, category_id: str = "2200") -> dict:
-        """POST /{user_id}/accounts — create a Facebook Page."""
+    def create_page_graphql(self, access_token: str, page_name: str, category_ids: list[str]) -> dict:
+        """Create a page via Facebook's internal GraphQL API (used by MBS app)."""
+        self.session.headers["Authorization"] = f"OAuth {access_token}"
+        self.session.headers["X-FB-Friendly-Name"] = "BizAppCreatePageMutation"
+        attempts = [
+            {
+                "name": "graphql_raw_biz_app_create_page",
+                "data": {
+                    "fb_api_req_friendly_name": "BizAppCreatePageMutation",
+                    "variables": json.dumps({"input": {"name": page_name, "categories": category_ids}}),
+                    "access_token": access_token,
+                    "q": """mutation BizAppCreatePageMutation($input: BizAppCreatePageInput!) {
+  biz_app_create_page(input: $input) {
+    page { id name category_list { id name } }
+  }
+}""",
+                },
+            },
+            {
+                "name": "graphql_raw_page_create",
+                "data": {
+                    "fb_api_req_friendly_name": "BizAppCreatePageMutation",
+                    "variables": json.dumps({"input": {"name": page_name, "categories": category_ids}}),
+                    "access_token": access_token,
+                    "q": """mutation PageCreate($input: PageCreateInput!) {
+  page_create(input: $input) {
+    page { id name }
+  }
+}""",
+                },
+            },
+            {
+                "name": "graphql_friendly_name_only",
+                "data": {
+                    "fb_api_req_friendly_name": "BizAppCreatePageMutation",
+                    "variables": json.dumps({"input": {"name": page_name, "categories": category_ids}}),
+                    "access_token": access_token,
+                },
+            },
+        ]
+        last_error = self._api_error("GraphQL page creation failed")
+        try:
+            for attempt in attempts:
+                try:
+                    response = self._request_with_retry(
+                        "POST",
+                        f"{GRAPH_URL}/graphql",
+                        data=attempt["data"],
+                        timeout=15,
+                    )
+                except Exception as e:
+                    last_error = {"error": True, "status": "network_error", "msg": str(e)}
+                    logger.info("create_page_graphql attempt=%s failed status=%s", attempt["name"], last_error["status"])
+                    continue
+
+                payload = self._parse_json_response(response, {})
+                normalized_error = self._normalize_graph_payload_error(payload)
+                if normalized_error:
+                    last_error = normalized_error
+                    logger.info("create_page_graphql attempt=%s failed status=%s", attempt["name"], last_error.get("status"))
+                    if last_error.get("status") == "checkpoint":
+                        return last_error
+                    continue
+
+                success = self._graphql_success_result(payload)
+                if success:
+                    logger.info("create_page_graphql succeeded via %s", attempt["name"])
+                    return success
+
+                message, code = self._extract_graphql_message(payload)
+                if code == "490" or "checkpoint" in message.lower():
+                    last_error = self._checkpoint_error(message)
+                elif message:
+                    last_error = self._api_error(message)
+                else:
+                    last_error = self._api_error("Unknown GraphQL error")
+                logger.info("create_page_graphql attempt=%s failed status=%s", attempt["name"], last_error.get("status"))
+
+            return last_error
+        finally:
+            self.session.headers["Authorization"] = "OAuth null"
+            self.session.headers["X-FB-Friendly-Name"] = "authenticate"
+
+    def get_valid_categories(self, access_token: str) -> list[dict]:
+        """Get valid page categories. Tries multiple approaches."""
+        fallback_categories = [
+            {"id": "2200", "name": "Local Business"},
+            {"id": "1601", "name": "Business/Economy Website"},
+            {"id": "2603", "name": "Internet Company"},
+            {"id": "1000", "name": "Business"},
+        ]
+        self.session.headers["Authorization"] = f"OAuth {access_token}"
+        self.session.headers["X-FB-Friendly-Name"] = "PageCategorySearchQuery"
+        try:
+            try:
+                response = self._request_with_retry(
+                    "POST",
+                    f"{GRAPH_URL}/graphql",
+                    data={
+                        "q": 'query { page_category_search(query: "Business") { id name } }',
+                        "access_token": access_token,
+                    },
+                    timeout=15,
+                )
+            except Exception:
+                response = None
+
+            if response is not None:
+                payload = self._parse_json_response(response, {})
+                if not payload.get("error"):
+                    categories = self._extract_category_results(payload)
+                    if categories:
+                        return categories
+
+            for query in ("Business", "Local Business", "Brand", "Company"):
+                result = self.search_categories(access_token, query)
+                if not result.get("error") and result.get("categories"):
+                    return result["categories"]
+
+            return fallback_categories
+        finally:
+            self.session.headers["Authorization"] = "OAuth null"
+            self.session.headers["X-FB-Friendly-Name"] = "authenticate"
+
+    def create_page(self, access_token: str, user_id: str, page_name: str, category_id: str = None) -> dict:
+        """Create a Facebook Page via GraphQL first, then REST fallback."""
+        if not category_id:
+            categories = self.get_valid_categories(access_token)
+            if categories:
+                category_id = categories[0].get("id", "2200")
+            else:
+                category_id = "2200"
+
+        graphql_result = self.create_page_graphql(access_token, page_name, [category_id])
+        if not graphql_result.get("error"):
+            logger.info("create_page used graphql category_id=%s", category_id)
+            return graphql_result
+
+        logger.info("create_page falling back to rest category_id=%s reason=%s", category_id, graphql_result.get("msg", "unknown"))
         self.session.headers["Authorization"] = f"OAuth {access_token}"
         self.session.headers["X-FB-Friendly-Name"] = "graphservice"
         try:
@@ -405,7 +636,8 @@ class MetaBusinessAPI:
                 if sub == 490:
                     return {"error": True, "status": "checkpoint", "msg": data["error"]["message"]}
                 return {"error": True, "status": "api_error", "msg": data["error"]["message"]}
-            return {"error": False, "data": data}
+            logger.info("create_page used rest category_id=%s", category_id)
+            return {"error": False, "data": data, "method": "rest"}
         finally:
             self.session.headers["Authorization"] = "OAuth null"
             self.session.headers["X-FB-Friendly-Name"] = "authenticate"
