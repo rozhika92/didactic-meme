@@ -11,9 +11,8 @@ import time
 import base64
 import json
 import uuid
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import random
+from curl_cffi import requests as curl_requests
 
 
 # App identities extracted from APK decompilation
@@ -98,20 +97,25 @@ class MetaBusinessAPI:
     def __init__(self, proxy: str = None, identity: str = DEFAULT_IDENTITY):
         self.identity = identity
         self.ident = IDENTITIES[identity]
-        self.session = requests.Session()
-        # Retry on proxy/connection errors
-        retry = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
-        adapter = HTTPAdapter(max_retries=retry)
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
+        self.session = curl_requests.Session(impersonate="chrome131_android")
         # Build identity-specific headers
         ua = build_user_agent(identity)
         self.session.headers.update({
             "User-Agent": ua,
             "Content-Type": "application/x-www-form-urlencoded",
             "X-FB-HTTP-Engine": "Liger",
-            "X-FB-Connection-Quality": "EXCELLENT",
+            "X-FB-Client-IP": "True",
+            "X-FB-Server-Cluster": "True",
+            "X-FB-Connection-Type": "WIFI",
+            "X-FB-Connection-Quality": random.choice(["EXCELLENT", "EXCELLENT", "EXCELLENT", "GOOD"]),
+            "X-FB-Connection-Bandwidth": str(random.randint(20000000, 40000000)),
+            "X-FB-Device-Group": "7991",
+            "X-FB-SIM-HNI": "310260",
+            "X-FB-Net-HNI": "310260",
+            "X-FB-Request-Analytics-Tags": "unknown",
             "X-FB-Friendly-Name": "authenticate",
+            "X-Tigon-Is-Retry": "False",
+            "Authorization": "OAuth null",
             "Accept-Encoding": "gzip, deflate",
             "Accept-Language": "en_US",
         })
@@ -121,6 +125,20 @@ class MetaBusinessAPI:
         self.family_device_id = str(uuid.uuid4())
         if proxy:
             self.session.proxies = {"http": proxy, "https": proxy}
+
+    def _request_with_retry(self, method, url, max_retries=3, **kwargs):
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                if method == "GET":
+                    return self.session.get(url, **kwargs)
+                else:
+                    return self.session.post(url, **kwargs)
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    time.sleep(1 * (attempt + 1))
+        raise last_error
 
     def new_device_fingerprint(self, seed: str = None):
         """Generate device IDs. If seed is given, IDs are deterministic (stable per-account)."""
@@ -163,42 +181,44 @@ class MetaBusinessAPI:
     def _build_login_params(self, uid: str, password: str) -> dict:
         """Build login params matching decompiled AuthenticateMethod."""
         params = {
-            # Core auth
-            "api_key": self.ident["api_key"],
-            "credentials_type": "password",
+            "adid": self.adid,
             "email": uid,
+            "password": password,
+            "credentials_type": "device_based_login_password",
+            "source": "login",
+            "error_detail_type": "button_with_disabled",
             "format": "json",
             "method": "auth.login",
-            "password": password,
             "v": "1.0",
             "locale": "en_US",
             "client_country_code": "US",
-            # Session
+            "access_token": f"{self.ident['api_key']}|{self.ident['api_secret']}",
+            "api_key": self.ident["api_key"],
             "generate_machine_id": "1",
             "generate_session_cookies": "1",
             "generate_analytics_claim": "1",
-            # Device fingerprint
             "device_id": self.device_id,
-            "adid": self.adid,
             "advertiser_id": self.adid,
             "family_device_id": self.family_device_id,
-            "secure_family_device_id": self.family_device_id,
-            # App identification
+            "secure_family_device_id": "",
             "fb_api_req_friendly_name": "authenticate",
-            "fb_api_caller_class": "AuthOperations",
-            "meta_inf_fbmeta": "",
+            "meta_inf_fbmeta": "NO_FILE",
+            "community_id": "",
             "cpl": "true",
             "try_num": "1",
             "currently_logged_in_userid": "0",
             "enroll_misauth": "false",
             "return_ssl_resources": "0",
-            # Device info
             "device_name": "Pixel 6",
             "device_model_name": "Pixel 6",
             "sim_serials": "[]",
             "encrypted_msisdn": "",
             "jazoest": self._compute_jazoest(uid),
         }
+        if self.identity == "katana":
+            params["fb_api_caller_class"] = "com.facebook.account.login.protocol.Fb4aAuthHandler"
+        else:
+            params["fb_api_caller_class"] = "AuthOperations$PasswordAuthOperation"
         return params
 
     def login(self, uid: str, password: str, totp_secret: str) -> dict:
@@ -214,7 +234,7 @@ class MetaBusinessAPI:
         params["sig"] = self._compute_sig(params)
 
         try:
-            r = self.session.post(AUTH_URL, data=params, timeout=20)
+            r = self._request_with_retry("POST", AUTH_URL, data=params, timeout=20)
             result = r.json()
         except Exception as e:
             return {"status": "error", "error_msg": str(e)}
@@ -259,7 +279,7 @@ class MetaBusinessAPI:
             params2["sig"] = self._compute_sig(params2)
 
             try:
-                r2 = self.session.post(AUTH_URL, data=params2, timeout=20)
+                r2 = self._request_with_retry("POST", AUTH_URL, data=params2, timeout=20)
                 result2 = r2.json()
             except Exception as e:
                 return {"status": "error", "error_msg": f"2FA request failed: {e}"}
@@ -285,116 +305,143 @@ class MetaBusinessAPI:
 
     def get_user_info(self, access_token: str) -> dict:
         """GET /me"""
+        self.session.headers["Authorization"] = f"OAuth {access_token}"
+        self.session.headers["X-FB-Friendly-Name"] = "graphservice"
         try:
-            r = self.session.get(f"{GRAPH_URL}/me", params={"fields": "id,name", "access_token": access_token}, timeout=15)
-        except Exception as e:
-            return {"error": True, "status": "network_error", "msg": str(e)}
+            try:
+                r = self._request_with_retry("GET", f"{GRAPH_URL}/me", params={"fields": "id,name", "access_token": access_token}, timeout=15)
+            except Exception as e:
+                return {"error": True, "status": "network_error", "msg": str(e)}
 
-        if r.headers.get("x-fb-integrity-required") == "checkpoint":
-            return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification"}
+            if r.headers.get("x-fb-integrity-required") == "checkpoint":
+                return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification"}
 
-        if not r.content:
-            return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})"}
+            if not r.content:
+                return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})"}
 
-        try:
-            data = r.json()
-        except (ValueError, requests.exceptions.JSONDecodeError):
-            return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})"}
+            try:
+                data = r.json()
+            except (ValueError, json.JSONDecodeError):
+                return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})"}
 
-        if "error" in data:
-            sub = data["error"].get("error_subcode", "")
-            if sub == 490:
-                return {"error": True, "status": "checkpoint", "msg": data["error"]["message"]}
-            return {"error": True, "status": "api_error", "msg": data["error"]["message"]}
-        return {"error": False, "id": data.get("id"), "name": data.get("name")}
+            if "error" in data:
+                sub = data["error"].get("error_subcode", "")
+                if sub == 490:
+                    return {"error": True, "status": "checkpoint", "msg": data["error"]["message"]}
+                return {"error": True, "status": "api_error", "msg": data["error"]["message"]}
+            return {"error": False, "id": data.get("id"), "name": data.get("name")}
+        finally:
+            self.session.headers["Authorization"] = "OAuth null"
+            self.session.headers["X-FB-Friendly-Name"] = "authenticate"
 
     def get_pages(self, access_token: str) -> dict:
         """GET /me/accounts"""
+        self.session.headers["Authorization"] = f"OAuth {access_token}"
+        self.session.headers["X-FB-Friendly-Name"] = "graphservice"
         try:
-            r = self.session.get(
-                f"{GRAPH_URL}/me/accounts",
-                params={"fields": "id,name,access_token,category", "limit": "100", "access_token": access_token},
-                timeout=15,
-            )
-        except Exception as e:
-            return {"error": True, "status": "network_error", "msg": str(e), "pages": []}
+            try:
+                r = self._request_with_retry(
+                    "GET",
+                    f"{GRAPH_URL}/me/accounts",
+                    params={"fields": "id,name,access_token,category", "limit": "100", "access_token": access_token},
+                    timeout=15,
+                )
+            except Exception as e:
+                return {"error": True, "status": "network_error", "msg": str(e), "pages": []}
 
-        if r.headers.get("x-fb-integrity-required") == "checkpoint":
-            return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification", "pages": []}
+            if r.headers.get("x-fb-integrity-required") == "checkpoint":
+                return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification", "pages": []}
 
-        if not r.content:
-            return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})", "pages": []}
+            if not r.content:
+                return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})", "pages": []}
 
-        try:
-            data = r.json()
-        except (ValueError, requests.exceptions.JSONDecodeError):
-            return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})", "pages": []}
+            try:
+                data = r.json()
+            except (ValueError, json.JSONDecodeError):
+                return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})", "pages": []}
 
-        if "error" in data:
-            sub = data["error"].get("error_subcode", "")
-            if sub == 490:
-                return {"error": True, "status": "checkpoint", "msg": data["error"]["message"], "pages": []}
-            return {"error": True, "status": "api_error", "msg": data["error"]["message"], "pages": []}
-        return {"error": False, "pages": data.get("data", []), "paging": data.get("paging")}
+            if "error" in data:
+                sub = data["error"].get("error_subcode", "")
+                if sub == 490:
+                    return {"error": True, "status": "checkpoint", "msg": data["error"]["message"], "pages": []}
+                return {"error": True, "status": "api_error", "msg": data["error"]["message"], "pages": []}
+            return {"error": False, "pages": data.get("data", []), "paging": data.get("paging")}
+        finally:
+            self.session.headers["Authorization"] = "OAuth null"
+            self.session.headers["X-FB-Friendly-Name"] = "authenticate"
 
     def create_page(self, access_token: str, user_id: str, page_name: str, category_id: str = "2200") -> dict:
         """POST /{user_id}/accounts — create a Facebook Page."""
+        self.session.headers["Authorization"] = f"OAuth {access_token}"
+        self.session.headers["X-FB-Friendly-Name"] = "graphservice"
         try:
-            r = self.session.post(
-                f"{GRAPH_URL}/{user_id}/accounts",
-                data={
-                    "name": page_name,
-                    "category_list": f'["{category_id}"]',
-                    "access_token": access_token,
-                },
-                timeout=15,
-            )
-        except Exception as e:
-            return {"error": True, "status": "network_error", "msg": str(e)}
+            try:
+                r = self._request_with_retry(
+                    "POST",
+                    f"{GRAPH_URL}/{user_id}/accounts",
+                    data={
+                        "name": page_name,
+                        "category_list": f'["{category_id}"]',
+                        "access_token": access_token,
+                    },
+                    timeout=15,
+                )
+            except Exception as e:
+                return {"error": True, "status": "network_error", "msg": str(e)}
 
-        if r.headers.get("x-fb-integrity-required") == "checkpoint":
-            return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification"}
+            if r.headers.get("x-fb-integrity-required") == "checkpoint":
+                return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification"}
 
-        if not r.content:
-            return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})"}
+            if not r.content:
+                return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})"}
 
-        try:
-            data = r.json()
-        except (ValueError, requests.exceptions.JSONDecodeError):
-            return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})"}
+            try:
+                data = r.json()
+            except (ValueError, json.JSONDecodeError):
+                return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})"}
 
-        if "error" in data:
-            sub = data["error"].get("error_subcode", "")
-            if sub == 490:
-                return {"error": True, "status": "checkpoint", "msg": data["error"]["message"]}
-            return {"error": True, "status": "api_error", "msg": data["error"]["message"]}
-        return {"error": False, "data": data}
+            if "error" in data:
+                sub = data["error"].get("error_subcode", "")
+                if sub == 490:
+                    return {"error": True, "status": "checkpoint", "msg": data["error"]["message"]}
+                return {"error": True, "status": "api_error", "msg": data["error"]["message"]}
+            return {"error": False, "data": data}
+        finally:
+            self.session.headers["Authorization"] = "OAuth null"
+            self.session.headers["X-FB-Friendly-Name"] = "authenticate"
 
     def search_categories(self, access_token: str, query: str) -> dict:
         """Search page categories."""
+        self.session.headers["Authorization"] = f"OAuth {access_token}"
+        self.session.headers["X-FB-Friendly-Name"] = "graphservice"
         try:
-            r = self.session.get(
-                f"{GRAPH_URL}/pages/search",
-                params={"type": "placetopic", "q": query, "access_token": access_token},
-                timeout=15,
-            )
-        except Exception as e:
-            return {"error": True, "status": "network_error", "msg": str(e), "categories": []}
+            try:
+                r = self._request_with_retry(
+                    "GET",
+                    f"{GRAPH_URL}/pages/search",
+                    params={"type": "placetopic", "q": query, "access_token": access_token},
+                    timeout=15,
+                )
+            except Exception as e:
+                return {"error": True, "status": "network_error", "msg": str(e), "categories": []}
 
-        if r.headers.get("x-fb-integrity-required") == "checkpoint":
-            return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification", "categories": []}
+            if r.headers.get("x-fb-integrity-required") == "checkpoint":
+                return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification", "categories": []}
 
-        if not r.content:
-            return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})", "categories": []}
+            if not r.content:
+                return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})", "categories": []}
 
-        try:
-            data = r.json()
-        except (ValueError, requests.exceptions.JSONDecodeError):
-            return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})", "categories": []}
+            try:
+                data = r.json()
+            except (ValueError, json.JSONDecodeError):
+                return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})", "categories": []}
 
-        if "error" in data:
-            sub = data["error"].get("error_subcode", "")
-            if sub == 490:
-                return {"error": True, "status": "checkpoint", "msg": data["error"]["message"], "categories": []}
-            return {"error": True, "status": "api_error", "msg": data["error"]["message"], "categories": []}
-        return {"error": False, "categories": data.get("data", [])}
+            if "error" in data:
+                sub = data["error"].get("error_subcode", "")
+                if sub == 490:
+                    return {"error": True, "status": "checkpoint", "msg": data["error"]["message"], "categories": []}
+                return {"error": True, "status": "api_error", "msg": data["error"]["message"], "categories": []}
+            return {"error": False, "categories": data.get("data", [])}
+        finally:
+            self.session.headers["Authorization"] = "OAuth null"
+            self.session.headers["X-FB-Friendly-Name"] = "authenticate"
