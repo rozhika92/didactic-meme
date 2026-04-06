@@ -9,11 +9,17 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import random
 import struct
 import time
 import uuid
+from urllib.parse import urlencode
+
 from curl_cffi import requests as curl_requests
+from Crypto.Cipher import AES, PKCS1_OAEP, PKCS1_v1_5
+from Crypto.Hash import SHA1, SHA256
+from Crypto.PublicKey import RSA
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +52,7 @@ DEFAULT_IDENTITY = "katana"
 AUTH_URL = "https://b-api.facebook.com/method/auth.login"
 GRAPH_URL = "https://b-graph.facebook.com"
 GRAPH_WWW_URL = "https://graph-www.facebook.com"
+PWD_KEY_URL = "https://b-graph.facebook.com/pwd_key_fetch"
 
 # Verified doc_ids extracted from MBS APK v547 via Frida JNI hooking on Android emulator.
 # GraphQLServiceFactory.createClientDocIdForQueryNameHash(3178286506L)
@@ -112,9 +119,16 @@ def build_user_agent(
 class MetaBusinessAPI:
     """Client mimicking Meta Business Suite / Facebook Android app API calls."""
 
-    def __init__(self, proxy: str = None, identity: str = DEFAULT_IDENTITY):
+    RSA_MODES = ["oaep_sha1", "pkcs1v15", "oaep_sha256"]
+
+    def __init__(self, proxy: str = None, identity: str = DEFAULT_IDENTITY, rsa_mode: str = "oaep_sha1"):
+        if rsa_mode not in self.RSA_MODES:
+            raise ValueError(f"Unsupported rsa_mode: {rsa_mode}")
         self.identity = identity
         self.ident = IDENTITIES[identity]
+        self._rsa_mode = rsa_mode
+        self._pub_key_pem = None
+        self._key_id = None
         self.session = curl_requests.Session(impersonate="chrome131_android")
         # Build identity-specific headers
         ua = build_user_agent(identity)
@@ -330,6 +344,65 @@ class MetaBusinessAPI:
             params["fb_api_caller_class"] = "AuthOperations$PasswordAuthOperation"
         return params
 
+    def _fetch_pub_key(self):
+        """Fetch Facebook's password encryption public key."""
+        try:
+            r = self._request_with_retry(
+                "GET",
+                PWD_KEY_URL,
+                params={
+                    "access_token": f"{self.ident['api_key']}|{self.ident['api_secret']}",
+                    "version": "2",
+                },
+                timeout=15,
+            )
+            data = r.json()
+            self._pub_key_pem = data["public_key"]
+            self._key_id = int(data["key_id"])
+            logger.info("Fetched pub key: key_id=%d", self._key_id)
+        except Exception as e:
+            logger.error("Failed to fetch pub key: %s", e)
+            self._pub_key_pem = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAv8kHqCtfFsTGNhfXjNqY\n64k9QLsXdfcbNDx5FMPQvFisW23Pf2H9P4SWVC5u9SXsblgJvMkv/W9NMPg3vMIG\nHpqy0Hj/c+Pt4CIA3+92YFkwoRp9UJB+4mxBwHMvcKlK3inXlmo1aNaZJNf/36T7\n+QLilFrqM8C/kFQjK+Yjw54HXmRwEswUiZWbzaCgTKx8xdMvLtyTq43NUYNtsiv0\nwgyix+pJfES1dX9PzFu2ko06ON6jAgJ5/HaQ631HOemiIXpFEzxKsNbzzjtTwEM3\nhFkuTRXKimlei1y3+LQCrhUMcNenjARU5Z/8zLsifEvBJbIsHyie6FymRKp0cxjp\nzQIDAQAB\n-----END PUBLIC KEY-----"
+            self._key_id = 114
+
+    def encrypt_password(self, password: str) -> str:
+        """Encrypt password in #PWD_FB4A:4:timestamp:base64 format."""
+        if not self._pub_key_pem or self._key_id is None:
+            self._fetch_pub_key()
+
+        timestamp = str(int(time.time()))
+        aes_key = os.urandom(32)
+        iv = os.urandom(12)
+
+        rsa_key = RSA.import_key(self._pub_key_pem)
+        if self._rsa_mode == "oaep_sha1":
+            cipher_rsa = PKCS1_OAEP.new(rsa_key, hashAlgo=SHA1)
+            enc_aes_key = cipher_rsa.encrypt(aes_key)
+        elif self._rsa_mode == "oaep_sha256":
+            cipher_rsa = PKCS1_OAEP.new(rsa_key, hashAlgo=SHA256)
+            enc_aes_key = cipher_rsa.encrypt(aes_key)
+        elif self._rsa_mode == "pkcs1v15":
+            cipher_rsa = PKCS1_v1_5.new(rsa_key)
+            enc_aes_key = cipher_rsa.encrypt(aes_key)
+        else:
+            raise ValueError(f"Unsupported rsa_mode: {self._rsa_mode}")
+
+        cipher_aes = AES.new(aes_key, AES.MODE_GCM, nonce=iv)
+        cipher_aes.update(timestamp.encode("utf-8"))
+        ciphertext, tag = cipher_aes.encrypt_and_digest(password.encode("utf-8"))
+
+        buf = (
+            b"\x01"
+            + struct.pack(">H", self._key_id)
+            + iv
+            + struct.pack(">H", len(enc_aes_key))
+            + enc_aes_key
+            + tag
+            + ciphertext
+        )
+
+        return f"#PWD_FB4A:4:{timestamp}:{base64.b64encode(buf).decode()}"
+
     def login(self, uid: str, password: str, totp_secret: str) -> dict:
         """
         Full login flow with automatic 2FA handling.
@@ -339,11 +412,14 @@ class MetaBusinessAPI:
           access_token, uid, session_cookies, machine_id, secret (when ok)
           error_msg (when not ok)
         """
-        params = self._build_login_params(uid, password)
+        enc_password = self.encrypt_password(password)
+        params = self._build_login_params(uid, enc_password)
         params["sig"] = self._compute_sig(params)
+        body = urlencode(params)
 
         try:
-            r = self._request_with_retry("POST", AUTH_URL, data=params, timeout=20)
+            r = self._request_with_retry("POST", AUTH_URL, data=body, timeout=20)
+            logger.debug("auth.login raw HTTP %d: %s", r.status_code, r.text[:500])
             result = r.json()
         except Exception as e:
             return {"status": "error", "error_msg": str(e)}
@@ -360,11 +436,22 @@ class MetaBusinessAPI:
 
         error_code = result.get("error_code")
         if error_code == 1:
-            return {"status": "disabled", "error_msg": "Account disabled or banned"}
+            return {"status": "error", "error_msg": f"Request error: {result.get('error_msg', 'Unknown error')}"}
         if error_code == 401:
+            logger.warning(
+                "auth.login returned 401 using rsa_mode=%s; try a different RSA mode via --rsa-mode (%s)",
+                self._rsa_mode,
+                ", ".join(self.RSA_MODES),
+            )
             return {"status": "wrong_pass", "error_msg": "Invalid credentials"}
+        if error_code == 400:
+            return {"status": "error", "error_msg": f"Username not found: {result.get('error_msg', '')}"}
         if error_code == 368:
             return {"status": "rate_limit", "error_msg": result.get("error_msg", "Too many requests")}
+        if error_code == 613:
+            return {"status": "rate_limit", "error_msg": result.get("error_msg", "Rate limited")}
+        if error_code == 418:
+            return {"status": "error", "error_msg": result.get("error_msg", "Unexpected error, try again")}
         if error_code == 405:
             return {"status": "checkpoint", "error_msg": result.get("error_msg", "Checkpoint verification required")}
 
@@ -377,7 +464,8 @@ class MetaBusinessAPI:
                 return {"status": "checkpoint", "error_msg": "Account requires checkpoint verification"}
 
             totp_code = self._generate_totp(totp_secret)
-            params2 = self._build_login_params(uid, password)
+            enc_password_2fa = self.encrypt_password(password)
+            params2 = self._build_login_params(uid, enc_password_2fa)
             params2.update({
                 "credentials_type": "two_factor",
                 "twofactor_code": totp_code,
@@ -386,9 +474,11 @@ class MetaBusinessAPI:
                 "machine_id": error_data["machine_id"],
             })
             params2["sig"] = self._compute_sig(params2)
+            body2 = urlencode(params2)
 
             try:
-                r2 = self._request_with_retry("POST", AUTH_URL, data=params2, timeout=20)
+                r2 = self._request_with_retry("POST", AUTH_URL, data=body2, timeout=20)
+                logger.debug("auth.login 2FA raw HTTP %d: %s", r2.status_code, r2.text[:500])
                 result2 = r2.json()
             except Exception as e:
                 return {"status": "error", "error_msg": f"2FA request failed: {e}"}

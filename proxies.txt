@@ -1,5 +1,5 @@
 # Proxy list — one per line
-# Format: host:port:username:password
+# Format: host:port:user:pass
 # Or: host:port (no auth)
 # Lines starting with # are comments
 #

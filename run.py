@@ -24,6 +24,7 @@ class RunState:
     command: str
     total: int
     delay: float
+    rsa_mode: str
     logger: logging.Logger
     result_paths: dict[str, Path]
     summary: dict[str, int] = field(
@@ -130,6 +131,11 @@ def setup_logger(base_dir: Path, timestamp: str) -> tuple[logging.Logger, Path]:
     handler = logging.FileHandler(log_path, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
     logger.addHandler(handler)
+    meta_logger = logging.getLogger("meta_api")
+    meta_logger.setLevel(logging.DEBUG)
+    meta_logger.propagate = False
+    meta_logger.handlers.clear()
+    meta_logger.addHandler(handler)
     return logger, log_path
 
 
@@ -186,8 +192,13 @@ def finalize_success(state: RunState, color: str, uid: str, detail: str) -> None
     state.emit(color, f"[{progress}/{state.total}] ✅ {uid} → {detail}")
 
 
-def login_account(account: dict[str, str], proxy: Optional[str] = None, identity: str = "katana") -> tuple[MetaBusinessAPI, dict]:
-    client = MetaBusinessAPI(proxy=proxy, identity=identity)
+def login_account(
+    account: dict[str, str],
+    proxy: Optional[str] = None,
+    identity: str = "katana",
+    rsa_mode: str = "oaep_sha1",
+) -> tuple[MetaBusinessAPI, dict]:
+    client = MetaBusinessAPI(proxy=proxy, identity=identity, rsa_mode=rsa_mode)
     client.new_device_fingerprint(seed=account["uid"])
     return client, client.login(account["uid"], account["password"], account["totp_secret"])
 
@@ -236,7 +247,7 @@ def create_page(client: MetaBusinessAPI, logger: logging.Logger, uid: str, acces
 
 def process_login(state: RunState, account: dict[str, str], proxy: Optional[str], identity: str) -> None:
     uid = account["uid"]
-    client, result = login_account(account, proxy=proxy, identity=identity)
+    client, result = login_account(account, proxy=proxy, identity=identity, rsa_mode=state.rsa_mode)
     log_login_result(state.logger, uid, proxy, result)
     if result.get("status") != "ok":
         summary_key, symbol, color, message = classify_login_failure(result)
@@ -262,7 +273,7 @@ def process_login(state: RunState, account: dict[str, str], proxy: Optional[str]
 
 def process_create_page(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: Optional[str], identity: str) -> None:
     uid = account["uid"]
-    client, result = login_account(account, proxy=proxy, identity=identity)
+    client, result = login_account(account, proxy=proxy, identity=identity, rsa_mode=state.rsa_mode)
     log_login_result(state.logger, uid, proxy, result)
     if result.get("status") != "ok":
         summary_key, symbol, color, message = classify_login_failure(result)
@@ -307,7 +318,7 @@ def process_create_page(state: RunState, account: dict[str, str], proxy: Optiona
 
 def process_get_pages(state: RunState, account: dict[str, str], proxy: Optional[str], identity: str) -> None:
     uid = account["uid"]
-    client, result = login_account(account, proxy=proxy, identity=identity)
+    client, result = login_account(account, proxy=proxy, identity=identity, rsa_mode=state.rsa_mode)
     log_login_result(state.logger, uid, proxy, result)
     if result.get("status") != "ok":
         summary_key, symbol, color, message = classify_login_failure(result)
@@ -336,7 +347,7 @@ def process_get_pages(state: RunState, account: dict[str, str], proxy: Optional[
 
 def process_full(state: RunState, account: dict[str, str], proxy: Optional[str], page_name: str, category: Optional[str], identity: str) -> None:
     uid = account["uid"]
-    client, result = login_account(account, proxy=proxy, identity=identity)
+    client, result = login_account(account, proxy=proxy, identity=identity, rsa_mode=state.rsa_mode)
     log_login_result(state.logger, uid, proxy, result)
     if result.get("status") != "ok":
         summary_key, symbol, color, message = classify_login_failure(result)
@@ -457,6 +468,8 @@ def add_common_args(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--delay", type=float, default=1.0, help="Delay in seconds between accounts per thread (default: 1.0)")
     subparser.add_argument("--identity", choices=["katana", "pages_manager"], default="katana",
                            help="App identity to use (default: katana)")
+    subparser.add_argument("--rsa-mode", choices=MetaBusinessAPI.RSA_MODES, default="oaep_sha1",
+                           help="RSA padding/hash mode for password encryption (default: oaep_sha1)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -488,6 +501,8 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--token", required=True, help="Access token to use")
     search_parser.add_argument("--identity", choices=["katana", "pages_manager"], default="katana",
                                help="App identity to use (default: katana)")
+    search_parser.add_argument("--rsa-mode", choices=MetaBusinessAPI.RSA_MODES, default="oaep_sha1",
+                               help="RSA padding/hash mode for password encryption (default: oaep_sha1)")
 
     return parser
 
@@ -504,7 +519,7 @@ def validate_args(args: argparse.Namespace) -> None:
 def run_command(args: argparse.Namespace) -> None:
     validate_args(args)
     if args.command == "search-categories":
-        client = MetaBusinessAPI(identity=args.identity)
+        client = MetaBusinessAPI(identity=args.identity, rsa_mode=args.rsa_mode)
         result = client.search_categories(args.token, args.query)
         if result.get("error"):
             print(f"Error: {result['msg']}")
@@ -529,6 +544,7 @@ def run_command(args: argparse.Namespace) -> None:
         command=args.command,
         total=len(accounts),
         delay=args.delay,
+        rsa_mode=args.rsa_mode,
         logger=logger,
         result_paths=result_paths,
     )
@@ -537,9 +553,10 @@ def run_command(args: argparse.Namespace) -> None:
     proxies = load_proxies(args.proxy_file)
     lanes = build_lanes(accounts, proxies, args.threads)
     logger.info(
-        "Starting command=%s identity=%s accounts=%s threads=%s delay=%s proxies=%s",
+        "Starting command=%s identity=%s rsa_mode=%s accounts=%s threads=%s delay=%s proxies=%s",
         args.command,
         args.identity,
+        args.rsa_mode,
         len(accounts),
         len(lanes),
         args.delay,
@@ -551,9 +568,12 @@ def run_command(args: argparse.Namespace) -> None:
         for future in as_completed(futures):
             future.result()
 
-    logger.info("Completed command=%s identity=%s summary=%s", args.command, args.identity, state.summary)
+    logger.info("Completed command=%s identity=%s rsa_mode=%s summary=%s", args.command, args.identity, args.rsa_mode, state.summary)
     print_summary(state.summary, args.command, result_paths, log_path)
     for handler in logger.handlers[:]:
+        meta_logger = logging.getLogger("meta_api")
+        if handler in meta_logger.handlers:
+            meta_logger.removeHandler(handler)
         handler.close()
         logger.removeHandler(handler)
 
