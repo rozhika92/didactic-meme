@@ -148,7 +148,7 @@ def make_result_paths(base_dir: Path, timestamp: str, command: str) -> dict[str,
 
 def checkpoint_like(message: str) -> bool:
     lowered = (message or "").lower()
-    return "checkpoint" in lowered or "verification" in lowered or "405" in lowered
+    return any(kw in lowered for kw in ("checkpoint", "verification", "405", "490", "blocking"))
 
 
 def classify_login_failure(result: dict) -> tuple[str, str, str, str]:
@@ -156,6 +156,8 @@ def classify_login_failure(result: dict) -> tuple[str, str, str, str]:
     message = result.get("error_msg", "Unknown error")
     if status == "checkpoint" or checkpoint_like(message):
         return "checkpoint", "⚠️", YELLOW, message
+    if status == "rate_limit":
+        return "errors", "⏳", YELLOW, message
     if status == "disabled":
         return "disabled", "❌", RED, message
     if status == "wrong_pass":
@@ -449,7 +451,7 @@ def print_summary(summary: dict[str, int], command: str, result_paths: dict[str,
 
 
 def add_common_args(subparser: argparse.ArgumentParser) -> None:
-    subparser.add_argument("--file", required=True, help="Path to accounts file")
+    subparser.add_argument("-f", "--file", required=True, help="Path to accounts file")
     subparser.add_argument("--proxy-file", default="proxies.txt", help="Path to proxies file (default: proxies.txt)")
     subparser.add_argument("--threads", type=int, default=5, help="Number of worker threads (default: 5)")
     subparser.add_argument("--delay", type=float, default=1.0, help="Delay in seconds between accounts per thread (default: 1.0)")
