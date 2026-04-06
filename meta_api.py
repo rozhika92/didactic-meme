@@ -47,18 +47,18 @@ AUTH_URL = "https://b-api.facebook.com/method/auth.login"
 GRAPH_URL = "https://b-graph.facebook.com"
 GRAPH_WWW_URL = "https://graph-www.facebook.com"
 
-# Reverse-engineered from MBS APK v547 (classes4.dex, AZ6.java):
-# BizAppCreatePageMutation query_name_hash = 3178286506
-# The actual server doc_id is resolved at runtime by JNI native code
-# from fbandroid_graph_metadata.bin FlatBuffer. The hash 3178286506
-# is NOT the doc_id itself.
+# Verified doc_ids extracted from MBS APK v547 via Frida JNI hooking on Android emulator.
+# GraphQLServiceFactory.createClientDocIdForQueryNameHash(3178286506L)
+# returned "317828650610284500029763397346".
 #
-# Other mutation hashes found in APK:
-# InstagramCollabAcceptMutation: 1462659734
-# InstagramCollabDeclineMutation: 3272396800
-# BIZMessengerPageCreateOrUpdateOrderMutation: 440803509
-APK_QUERY_HASHES = {
-    "BizAppCreatePageMutation": "3178286506",
+# Format: str(query_name_hash) + str(field1_uint64) from fbandroid_graph_metadata.bin.
+# The hash 3178286506 alone is NOT the doc_id — it is resolved by native C++ code
+# inside libgraphservice-jni-factory (packed in libstartup.so / libscrollmerged.so).
+RESOLVED_DOC_IDS = {
+    "BizAppCreatePageMutation": "317828650610284500029763397346",
+    "InstagramCollabAcceptMutation": "14626597345362839530295772214",
+    "InstagramCollabDeclineMutation": "32723968003686238167148904534",
+    "BIZMessengerPageCreateOrUpdateOrderMutation": "44080350911158068324316851480",
 }
 
 
@@ -480,61 +480,69 @@ class MetaBusinessAPI:
             self.session.headers["X-FB-Friendly-Name"] = "authenticate"
 
     def create_page_graphql(self, access_token: str, page_name: str, category_ids: list[str]) -> dict:
-        """Create a page via Facebook's internal GraphQL API (used by MBS app)."""
+        """Create a page via Facebook's internal GraphQL API (used by MBS app).
+
+        Uses the verified doc_id extracted from the MBS APK v547 native library.
+        Request format matches VUH.java (RelayPrefetcherMethod) serializer exactly:
+        doc_id, variables, fb_api_req_friendly_name, server_timestamps, format, access_token.
+        """
         self.session.headers["Authorization"] = f"OAuth {access_token}"
         self.session.headers["X-FB-Friendly-Name"] = "BizAppCreatePageMutation"
-        variables = json.dumps({"input": {"name": page_name, "categories": category_ids}})
+
+        # Set mutation-specific headers (the real app sets purpose=mutation for writes)
+        original_purpose = self.session.headers.get("x-graphql-request-purpose")
+        original_analytics = self.session.headers.get("x-fb-request-analytics-tags")
+        if self.identity == "pages_manager":
+            self.session.headers["x-graphql-request-purpose"] = "mutation"
+            self.session.headers["x-fb-request-analytics-tags"] = json.dumps({
+                "network_tags": {
+                    "product": self.ident["api_key"],
+                    "request_category": "graphql",
+                    "purpose": "mutation",
+                    "retry_attempt": "0",
+                },
+                "application_tags": "graphservice",
+            })
+
+        # Variables must include client_mutation_id (from AbstractC4627AKg.java)
+        mutation_id = str(uuid.uuid4())
+        variables = json.dumps({
+            "input": {
+                "name": page_name,
+                "categories": category_ids,
+                "client_mutation_id": mutation_id,
+            }
+        })
+
+        doc_id = RESOLVED_DOC_IDS["BizAppCreatePageMutation"]
 
         attempts = [
+            # Primary: exact match of VUH.java RelayPrefetcherMethod serializer
             {
-                "name": "graphql_doc_id",
+                "name": "relay_doc_id",
                 "data": {
-                    "doc_id": APK_QUERY_HASHES["BizAppCreatePageMutation"],
+                    "doc_id": doc_id,
                     "variables": variables,
                     "fb_api_req_friendly_name": "BizAppCreatePageMutation",
+                    "server_timestamps": "true",
+                    "format": "JSON",
                     "access_token": access_token,
                 },
             },
+            # Fallback: FQL approach (server recognizes biz_app_create_page, error 1675039)
             {
                 "name": "fql_biz_app_create_page",
                 "data": {
                     "q": "biz_app_create_page(<input>) { page { id name } }",
                     "variables": variables,
                     "fb_api_req_friendly_name": "BizAppCreatePageMutation",
-                    "access_token": access_token,
-                },
-            },
-            {
-                "name": "graphql_query_id",
-                "data": {
-                    "query_id": APK_QUERY_HASHES["BizAppCreatePageMutation"],
-                    "variables": variables,
-                    "fb_api_req_friendly_name": "BizAppCreatePageMutation",
-                    "access_token": access_token,
-                },
-            },
-            {
-                "name": "graphql_client_doc_id",
-                "data": {
-                    "client_doc_id": APK_QUERY_HASHES["BizAppCreatePageMutation"],
-                    "query_name": "BizAppCreatePageMutation",
-                    "variables": variables,
-                    "fb_api_req_friendly_name": "BizAppCreatePageMutation",
-                    "access_token": access_token,
-                    "method": "post",
-                    "strip_defaults": "true",
-                    "strip_nulls": "true",
-                },
-            },
-            {
-                "name": "graphql_friendly_name_only",
-                "data": {
-                    "fb_api_req_friendly_name": "BizAppCreatePageMutation",
-                    "variables": variables,
+                    "server_timestamps": "true",
+                    "format": "JSON",
                     "access_token": access_token,
                 },
             },
         ]
+
         last_error = self._api_error("GraphQL page creation failed")
         try:
             for endpoint in (f"{GRAPH_URL}/graphql", f"{GRAPH_WWW_URL}/graphql"):
@@ -555,7 +563,7 @@ class MetaBusinessAPI:
                     normalized_error = self._normalize_graph_payload_error(payload)
                     if normalized_error:
                         last_error = normalized_error
-                        logger.info("create_page_graphql attempt=%s endpoint=%s failed status=%s", attempt["name"], endpoint, last_error.get("status"))
+                        logger.info("create_page_graphql attempt=%s endpoint=%s failed status=%s msg=%s", attempt["name"], endpoint, last_error.get("status"), last_error.get("msg", ""))
                         if last_error.get("status") == "checkpoint":
                             return last_error
                         continue
@@ -572,12 +580,21 @@ class MetaBusinessAPI:
                         last_error = self._api_error(message)
                     else:
                         last_error = self._api_error("Unknown GraphQL error")
-                    logger.info("create_page_graphql attempt=%s endpoint=%s failed status=%s", attempt["name"], endpoint, last_error.get("status"))
+                    logger.info("create_page_graphql attempt=%s endpoint=%s failed status=%s msg=%s", attempt["name"], endpoint, last_error.get("status"), last_error.get("msg", ""))
 
             return last_error
         finally:
             self.session.headers["Authorization"] = "OAuth null"
             self.session.headers["X-FB-Friendly-Name"] = "authenticate"
+            # Restore original graphql headers
+            if original_purpose is not None:
+                self.session.headers["x-graphql-request-purpose"] = original_purpose
+            elif "x-graphql-request-purpose" in self.session.headers:
+                del self.session.headers["x-graphql-request-purpose"]
+            if original_analytics is not None:
+                self.session.headers["x-fb-request-analytics-tags"] = original_analytics
+            elif "x-fb-request-analytics-tags" in self.session.headers:
+                del self.session.headers["x-fb-request-analytics-tags"]
 
     def get_valid_categories(self, access_token: str) -> list[dict]:
         """Get valid page categories. Tries multiple approaches."""
