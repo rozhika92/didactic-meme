@@ -468,6 +468,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     create_page_parser = subparsers.add_parser("create-page", help="Create a page for each account")
     add_common_args(create_page_parser)
+    create_page_parser.set_defaults(identity="pages_manager")
     create_page_parser.add_argument("--name", required=True, help="Page name to create")
     create_page_parser.add_argument("--category", default=None,
                                     help="Page category ID (auto-detected if not specified)")
@@ -477,6 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     full_parser = subparsers.add_parser("full", help="Run login, create-page, and get-pages flow")
     add_common_args(full_parser)
+    full_parser.set_defaults(identity="pages_manager")
     full_parser.add_argument("--name", required=True, help="Page name to create")
     full_parser.add_argument("--category", default=None,
                              help="Page category ID (auto-detected if not specified)")

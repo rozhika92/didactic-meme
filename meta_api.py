@@ -45,6 +45,21 @@ DEFAULT_IDENTITY = "katana"
 
 AUTH_URL = "https://b-api.facebook.com/method/auth.login"
 GRAPH_URL = "https://b-graph.facebook.com"
+GRAPH_WWW_URL = "https://graph-www.facebook.com"
+
+# Reverse-engineered from MBS APK v547 (classes4.dex, AZ6.java):
+# BizAppCreatePageMutation query_name_hash = 3178286506
+# The actual server doc_id is resolved at runtime by JNI native code
+# from fbandroid_graph_metadata.bin FlatBuffer. The hash 3178286506
+# is NOT the doc_id itself.
+#
+# Other mutation hashes found in APK:
+# InstagramCollabAcceptMutation: 1462659734
+# InstagramCollabDeclineMutation: 3272396800
+# BIZMessengerPageCreateOrUpdateOrderMutation: 440803509
+APK_QUERY_HASHES = {
+    "BizAppCreatePageMutation": "3178286506",
+}
 
 
 def build_user_agent(
@@ -468,79 +483,96 @@ class MetaBusinessAPI:
         """Create a page via Facebook's internal GraphQL API (used by MBS app)."""
         self.session.headers["Authorization"] = f"OAuth {access_token}"
         self.session.headers["X-FB-Friendly-Name"] = "BizAppCreatePageMutation"
+        variables = json.dumps({"input": {"name": page_name, "categories": category_ids}})
+
         attempts = [
             {
-                "name": "graphql_raw_biz_app_create_page",
+                "name": "graphql_doc_id",
                 "data": {
+                    "doc_id": APK_QUERY_HASHES["BizAppCreatePageMutation"],
+                    "variables": variables,
                     "fb_api_req_friendly_name": "BizAppCreatePageMutation",
-                    "variables": json.dumps({"input": {"name": page_name, "categories": category_ids}}),
                     "access_token": access_token,
-                    "q": """mutation BizAppCreatePageMutation($input: BizAppCreatePageInput!) {
-  biz_app_create_page(input: $input) {
-    page { id name category_list { id name } }
-  }
-}""",
                 },
             },
             {
-                "name": "graphql_raw_page_create",
+                "name": "fql_biz_app_create_page",
                 "data": {
+                    "q": "biz_app_create_page(<input>) { page { id name } }",
+                    "variables": variables,
                     "fb_api_req_friendly_name": "BizAppCreatePageMutation",
-                    "variables": json.dumps({"input": {"name": page_name, "categories": category_ids}}),
                     "access_token": access_token,
-                    "q": """mutation PageCreate($input: PageCreateInput!) {
-  page_create(input: $input) {
-    page { id name }
-  }
-}""",
+                },
+            },
+            {
+                "name": "graphql_query_id",
+                "data": {
+                    "query_id": APK_QUERY_HASHES["BizAppCreatePageMutation"],
+                    "variables": variables,
+                    "fb_api_req_friendly_name": "BizAppCreatePageMutation",
+                    "access_token": access_token,
+                },
+            },
+            {
+                "name": "graphql_client_doc_id",
+                "data": {
+                    "client_doc_id": APK_QUERY_HASHES["BizAppCreatePageMutation"],
+                    "query_name": "BizAppCreatePageMutation",
+                    "variables": variables,
+                    "fb_api_req_friendly_name": "BizAppCreatePageMutation",
+                    "access_token": access_token,
+                    "method": "post",
+                    "strip_defaults": "true",
+                    "strip_nulls": "true",
                 },
             },
             {
                 "name": "graphql_friendly_name_only",
                 "data": {
                     "fb_api_req_friendly_name": "BizAppCreatePageMutation",
-                    "variables": json.dumps({"input": {"name": page_name, "categories": category_ids}}),
+                    "variables": variables,
                     "access_token": access_token,
                 },
             },
         ]
         last_error = self._api_error("GraphQL page creation failed")
         try:
-            for attempt in attempts:
-                try:
-                    response = self._request_with_retry(
-                        "POST",
-                        f"{GRAPH_URL}/graphql",
-                        data=attempt["data"],
-                        timeout=15,
-                    )
-                except Exception as e:
-                    last_error = {"error": True, "status": "network_error", "msg": str(e)}
-                    logger.info("create_page_graphql attempt=%s failed status=%s", attempt["name"], last_error["status"])
-                    continue
+            for endpoint in (f"{GRAPH_URL}/graphql", f"{GRAPH_WWW_URL}/graphql"):
+                for attempt in attempts:
+                    try:
+                        response = self._request_with_retry(
+                            "POST",
+                            endpoint,
+                            data=attempt["data"],
+                            timeout=15,
+                        )
+                    except Exception as e:
+                        last_error = {"error": True, "status": "network_error", "msg": str(e)}
+                        logger.info("create_page_graphql attempt=%s endpoint=%s failed status=%s", attempt["name"], endpoint, last_error["status"])
+                        continue
 
-                payload = self._parse_json_response(response, {})
-                normalized_error = self._normalize_graph_payload_error(payload)
-                if normalized_error:
-                    last_error = normalized_error
-                    logger.info("create_page_graphql attempt=%s failed status=%s", attempt["name"], last_error.get("status"))
-                    if last_error.get("status") == "checkpoint":
-                        return last_error
-                    continue
+                    payload = self._parse_json_response(response, {})
+                    normalized_error = self._normalize_graph_payload_error(payload)
+                    if normalized_error:
+                        last_error = normalized_error
+                        logger.info("create_page_graphql attempt=%s endpoint=%s failed status=%s", attempt["name"], endpoint, last_error.get("status"))
+                        if last_error.get("status") == "checkpoint":
+                            return last_error
+                        continue
 
-                success = self._graphql_success_result(payload)
-                if success:
-                    logger.info("create_page_graphql succeeded via %s", attempt["name"])
-                    return success
+                    success = self._graphql_success_result(payload)
+                    if success:
+                        logger.info("create_page_graphql succeeded via %s on %s", attempt["name"], endpoint)
+                        return success
 
-                message, code = self._extract_graphql_message(payload)
-                if code == "490" or "checkpoint" in message.lower():
-                    last_error = self._checkpoint_error(message)
-                elif message:
-                    last_error = self._api_error(message)
-                else:
-                    last_error = self._api_error("Unknown GraphQL error")
-                logger.info("create_page_graphql attempt=%s failed status=%s", attempt["name"], last_error.get("status"))
+                    message, code = self._extract_graphql_message(payload)
+                    if code == "490" or "checkpoint" in message.lower():
+                        last_error = self._checkpoint_error(message)
+                    elif message:
+                        last_error = self._api_error(message)
+                    else:
+                        last_error = self._api_error("Unknown GraphQL error")
+                    logger.info("create_page_graphql attempt=%s endpoint=%s failed status=%s", attempt["name"], endpoint, last_error.get("status"))
 
             return last_error
         finally:
@@ -558,6 +590,26 @@ class MetaBusinessAPI:
         self.session.headers["Authorization"] = f"OAuth {access_token}"
         self.session.headers["X-FB-Friendly-Name"] = "PageCategorySearchQuery"
         try:
+            try:
+                rest_response = self._request_with_retry(
+                    "GET",
+                    f"{GRAPH_URL}/fb_page_categories",
+                    params={"access_token": access_token},
+                    timeout=15,
+                )
+                if rest_response.content:
+                    rest_data = rest_response.json()
+                    if isinstance(rest_data, dict) and "data" in rest_data:
+                        cats = [
+                            {"id": str(c["id"]), "name": c["name"]}
+                            for c in rest_data["data"]
+                            if c.get("id") and c.get("name")
+                        ]
+                        if cats:
+                            return cats
+            except Exception:
+                pass
+
             try:
                 response = self._request_with_retry(
                     "POST",
