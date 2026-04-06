@@ -10,7 +10,7 @@ didactic-meme/
 ├── run.py               # CLI tool (login/create-page/get-pages/full)
 ├── accounts.txt         # Account file (uid|password|totp_secret per line)
 ├── proxies.txt          # Proxy list (host:port:user:pass per line)
-├── requirements.txt     # Python deps (requests only)
+├── requirements.txt     # Python deps (curl_cffi transport)
 ├── apks/                # Patched APKs for emulator testing
 │   ├── facebook_katana_v555_patched.apk
 │   ├── meta_suite_v547_patched.apk
@@ -33,12 +33,12 @@ didactic-meme/
 - **Credential source:** Primary DEX, class `X.036` (found via `strings` + `grep`)
 
 ### Meta Business Suite (Pages Manager) — `com.facebook.pages.app`
-- **APK Version:** v547.0.0.40.109 (build 922914561) / v546.0.0.56.106 (build 917854681)
+- **APK Version:** v545.0.0.58.109 (build 909563321)
 - **APP_ID / API_KEY:** `121876164619130`
 - **API_SECRET:** `1ab2c5c902faedd339c14b2d58e929dc`
-- **FBAN:** `PagesManager`
+- **FBAN:** `PAAA`
 - **Package:** `com.facebook.pages.app`
-- **UA-specific tags:** `FB_FW/1;` (no `FBLR`/`FBBK`)
+- **UA-specific tags:** `FB_FW/2;FBSN/Android;FBDI/null;`
 - **Credential source:** Multiple DEX files (8x APP_ID occurrences, 2x API_SECRET)
 
 ### Wrong Credentials to Avoid
@@ -60,7 +60,7 @@ Content-Type: application/x-www-form-urlencoded
 https://b-graph.facebook.com
 ```
 
-### Required Headers (7 total)
+### Required Headers (base session)
 ```python
 {
     "User-Agent": "<dynamic UA string>",
@@ -70,6 +70,16 @@ https://b-graph.facebook.com
     "X-FB-Friendly-Name": "authenticate",
     "Accept-Encoding": "gzip, deflate",
     "Accept-Language": "en_US",
+}
+```
+
+### Additional MBS GraphQL Headers
+```python
+{
+    "x-graphql-client-library": "graphservice",
+    "x-graphql-request-purpose": "fetch",
+    "X-FB-HTTP-Engine": "Tigon/Liger",
+    "x-fb-request-analytics-tags": "{\"network_tags\":{\"product\":\"121876164619130\",\"request_category\":\"graphql\",\"purpose\":\"fetch\",\"retry_attempt\":\"0\"},\"application_tags\":\"graphservice\"}",
 }
 ```
 
@@ -87,10 +97,34 @@ FBSV/13.0;FBLR/0;FBBK/1;FBCA/arm64-v8a:armeabi-v7a;
 
 **Pages Manager UA tags (in order):**
 ```
-FBAN/PagesManager;FBAV/546.0.0.56.106;FBPN/com.facebook.pages.app;FBLC/en_US;
-FBBV/917854681;FBCR/;FBMF/Google;FBBD/google;FBDV/Pixel 6;FBSV/13.0;
-FBCA/arm64-v8a:armeabi-v7a;FBDM={density=2.75,width=1080,height=2400};FB_FW/1;
+FBAN/PAAA;FBAV/545.0.0.58.109;FBDM/{density=2.75,width=1080,height=2400};
+FBLC/en_US;FBBV/909563321;FB_FW/2;FBSN/Android;FBDI/null;FBCR/;
+FBMF/Google;FBBD/google;FBDV/Pixel 6;FBSV/13;FBCA/arm64-v8a:null;
 ```
+
+### Page Creation
+- REST `POST /{user_id}/accounts` is blocked for real users with `(#100) Can only call this method on valid test users for your app`
+- Real Meta Business Suite traffic uses `POST https://b-graph.facebook.com/graphql`
+- Primary mutation name: `BizAppCreatePageMutation`
+- Mutation variables shape:
+```python
+{
+    "input": {
+        "name": "<page_name>",
+        "categories": ["<category_id>"],
+    }
+}
+```
+- GraphQL page creation requires a **user access token** in both `Authorization: OAuth <token>` and form data
+
+### Category Discovery
+- Preferred path: GraphQL `page_category_search(query: "Business")`
+- REST fallback queries: `Business`, `Local Business`, `Brand`, `Company`
+- Hardcoded recovery IDs:
+  - `2200` — `Local Business`
+  - `1601` — `Business/Economy Website`
+  - `2603` — `Internet Company`
+  - `1000` — `Business`
 
 ### Login Parameters (31 total, including sig)
 ```python
@@ -192,11 +226,9 @@ Both APKs crash on emulators due to `DalvikInternals.<clinit>()` → `integrateW
 ### What Works
 - Full login flow with automatic 2FA
 - All 31 login params + sig computation
-- Graph API helpers (get_user_info, get_pages, create_page, search_categories)
+- Graph API helpers (get_user_info, get_pages, create_page with GraphQL-first fallback, search_categories, get_valid_categories)
 - CLI with 4 subcommands, multi-threaded, proxy rotation
 
 ### Planned Changes
-- Dual identity support (katana + pages_manager)
-- `--identity` CLI flag
-- `search-categories` subcommand
-- `.gitignore`, cleanup committed artifacts
+- Validate live `BizAppCreatePageMutation` field shape against more captures
+- Expand GraphQL category lookup coverage beyond `Business`
