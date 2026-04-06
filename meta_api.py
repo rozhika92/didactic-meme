@@ -47,7 +47,7 @@ GRAPH_URL = "https://b-graph.facebook.com"
 def build_user_agent(
     identity_name: str = DEFAULT_IDENTITY,
     device: str = "Pixel 6",
-    android_version: str = "13",
+    android_version: str = "13.0",
     build_tag: str = "TQ3A.230901.001",
 ) -> str:
     """Build User-Agent string matching the APK's UA builder."""
@@ -182,7 +182,7 @@ class MetaBusinessAPI:
             "adid": self.adid,
             "advertiser_id": self.adid,
             "family_device_id": self.family_device_id,
-            "secure_family_device_id": self.device_id,
+            "secure_family_device_id": self.family_device_id,
             # App identification
             "fb_api_req_friendly_name": "authenticate",
             "fb_api_caller_class": "AuthOperations",
@@ -234,6 +234,10 @@ class MetaBusinessAPI:
             return {"status": "disabled", "error_msg": "Account disabled or banned"}
         if error_code == 401:
             return {"status": "wrong_pass", "error_msg": "Invalid credentials"}
+        if error_code == 368:
+            return {"status": "rate_limit", "error_msg": result.get("error_msg", "Too many requests")}
+        if error_code == 405:
+            return {"status": "checkpoint", "error_msg": result.get("error_msg", "Checkpoint verification required")}
 
         if error_code == 406:
             try:
@@ -281,8 +285,22 @@ class MetaBusinessAPI:
 
     def get_user_info(self, access_token: str) -> dict:
         """GET /me"""
-        r = self.session.get(f"{GRAPH_URL}/me", params={"fields": "id,name", "access_token": access_token}, timeout=15)
-        data = r.json()
+        try:
+            r = self.session.get(f"{GRAPH_URL}/me", params={"fields": "id,name", "access_token": access_token}, timeout=15)
+        except Exception as e:
+            return {"error": True, "status": "network_error", "msg": str(e)}
+
+        if r.headers.get("x-fb-integrity-required") == "checkpoint":
+            return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification"}
+
+        if not r.content:
+            return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})"}
+
+        try:
+            data = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError):
+            return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})"}
+
         if "error" in data:
             sub = data["error"].get("error_subcode", "")
             if sub == 490:
@@ -292,40 +310,91 @@ class MetaBusinessAPI:
 
     def get_pages(self, access_token: str) -> dict:
         """GET /me/accounts"""
-        r = self.session.get(
-            f"{GRAPH_URL}/me/accounts",
-            params={"fields": "id,name,access_token,category", "limit": "100", "access_token": access_token},
-            timeout=15,
-        )
-        data = r.json()
+        try:
+            r = self.session.get(
+                f"{GRAPH_URL}/me/accounts",
+                params={"fields": "id,name,access_token,category", "limit": "100", "access_token": access_token},
+                timeout=15,
+            )
+        except Exception as e:
+            return {"error": True, "status": "network_error", "msg": str(e), "pages": []}
+
+        if r.headers.get("x-fb-integrity-required") == "checkpoint":
+            return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification", "pages": []}
+
+        if not r.content:
+            return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})", "pages": []}
+
+        try:
+            data = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError):
+            return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})", "pages": []}
+
         if "error" in data:
-            return {"error": True, "msg": data["error"]["message"], "pages": []}
+            sub = data["error"].get("error_subcode", "")
+            if sub == 490:
+                return {"error": True, "status": "checkpoint", "msg": data["error"]["message"], "pages": []}
+            return {"error": True, "status": "api_error", "msg": data["error"]["message"], "pages": []}
         return {"error": False, "pages": data.get("data", []), "paging": data.get("paging")}
 
     def create_page(self, access_token: str, user_id: str, page_name: str, category_id: str = "2200") -> dict:
         """POST /{user_id}/accounts — create a Facebook Page."""
-        r = self.session.post(
-            f"{GRAPH_URL}/{user_id}/accounts",
-            data={
-                "name": page_name,
-                "category_list": f'["{category_id}"]',
-                "access_token": access_token,
-            },
-            timeout=15,
-        )
-        data = r.json()
+        try:
+            r = self.session.post(
+                f"{GRAPH_URL}/{user_id}/accounts",
+                data={
+                    "name": page_name,
+                    "category_list": f'["{category_id}"]',
+                    "access_token": access_token,
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            return {"error": True, "status": "network_error", "msg": str(e)}
+
+        if r.headers.get("x-fb-integrity-required") == "checkpoint":
+            return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification"}
+
+        if not r.content:
+            return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})"}
+
+        try:
+            data = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError):
+            return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})"}
+
         if "error" in data:
-            return {"error": True, "msg": data["error"]["message"]}
+            sub = data["error"].get("error_subcode", "")
+            if sub == 490:
+                return {"error": True, "status": "checkpoint", "msg": data["error"]["message"]}
+            return {"error": True, "status": "api_error", "msg": data["error"]["message"]}
         return {"error": False, "data": data}
 
     def search_categories(self, access_token: str, query: str) -> dict:
         """Search page categories."""
-        r = self.session.get(
-            f"{GRAPH_URL}/pages/search",
-            params={"type": "placetopic", "q": query, "access_token": access_token},
-            timeout=15,
-        )
-        data = r.json()
+        try:
+            r = self.session.get(
+                f"{GRAPH_URL}/pages/search",
+                params={"type": "placetopic", "q": query, "access_token": access_token},
+                timeout=15,
+            )
+        except Exception as e:
+            return {"error": True, "status": "network_error", "msg": str(e), "categories": []}
+
+        if r.headers.get("x-fb-integrity-required") == "checkpoint":
+            return {"error": True, "status": "checkpoint", "msg": "Account requires checkpoint verification", "categories": []}
+
+        if not r.content:
+            return {"error": True, "status": "empty_response", "msg": f"Empty response (HTTP {r.status_code})", "categories": []}
+
+        try:
+            data = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError):
+            return {"error": True, "status": "parse_error", "msg": f"Non-JSON response (HTTP {r.status_code})", "categories": []}
+
         if "error" in data:
-            return {"error": True, "msg": data["error"]["message"], "categories": []}
+            sub = data["error"].get("error_subcode", "")
+            if sub == 490:
+                return {"error": True, "status": "checkpoint", "msg": data["error"]["message"], "categories": []}
+            return {"error": True, "status": "api_error", "msg": data["error"]["message"], "categories": []}
         return {"error": False, "categories": data.get("data", [])}
